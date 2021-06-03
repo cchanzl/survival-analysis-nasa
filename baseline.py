@@ -1,3 +1,6 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
+
 import pandas as pd
 import numpy as np
 import random
@@ -102,15 +105,16 @@ def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file):
 
 def minmax_scaler(df_train, df_test, sensor_names):
     scaler = MinMaxScaler()
+    scaler.fit(df_train[sensor_names])
 
     # scale train set
-    scaler.fit(df_train[sensor_names])
     df_train_scaled = df_train.copy()
     df_train_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_train[sensor_names]),
                                                  columns=sensor_names)
 
     # scale test set
-    df_test_scaled = df_test.drop('cycle', axis=1).groupby('unit num').last().copy()
+    df_test_scaled = df_test.copy()
+    #df_test_scaled = df_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
     df_test_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_test_scaled[sensor_names]),
                                                 columns=sensor_names,
                                                 index=df_test_scaled.index)
@@ -121,29 +125,31 @@ def add_specific_lags(df_input, list_of_lags, columns):
     df = df_input.copy()
     for i in list_of_lags:
         lagged_columns = [col + '_lag_{}'.format(i) for col in columns]
-        df[lagged_columns] = df.groupby('unit_nr')[columns].shift(i)
+        df[lagged_columns] = df.groupby('unit num')[columns].shift(i)
     df.dropna(inplace=True)
     return df
 
 
 def exponential_smoothing(df, sensors, n_samples, alpha=0.4):
     df = df.copy()
-    # first, calculate the exponential weighted mean of desired sensors
-    df[sensors] = df.groupby('unit_nr')[sensors].apply(lambda x: x.ewm(alpha=alpha).mean())
 
-    # second, drop first n_samples of each unit_nr to reduce filter delay
+    # first, calculate the exponential weighted mean of desired sensors
+    df[sensors] = df.groupby('unit num')[sensors].apply(lambda x: x.ewm(alpha=alpha).mean())
+
+    # second, drop first n_samples of each unit num to reduce filter delay
     def create_mask(data, samples):
         result = np.ones_like(data)
         result[0:samples] = 0
         return result
 
-    mask = df.groupby('unit_nr')['unit_nr'].transform(create_mask, samples=n_samples).astype(bool)
+    mask = df.groupby('unit num')['unit num'].transform(create_mask, samples=n_samples).astype(bool)
     df = df[mask]
 
     return df
 
 
 def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=0):
+
     X_train_interim, X_test_interim = minmax_scaler(df_train, df_test, remaining_sensors)
 
     X_train_interim = exponential_smoothing(X_train_interim, remaining_sensors, n, alpha)
@@ -152,11 +158,13 @@ def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=
     X_train_interim = add_specific_lags(X_train_interim, lags, remaining_sensors)
     X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
 
-    X_train_interim.drop(['unit num', 'cycle', 'RUL'], axis=1, inplace=True)
-    X_test_interim = X_test_interim.drop(['cycle'], axis=1).groupby('unit num').last().copy()
+    X_train_interim.drop(['op1', 'op2', 'op3', 'unit num', 'cycle', 'RUL'], axis=1, inplace=True)
+    X_test_interim.drop(['op1', 'op2', 'op3', 'cycle'], axis=1, inplace=True)
+    X_test_interim = X_test_interim.groupby('unit num').last().copy()
 
     idx = X_train_interim.index
     train_label = train_label.iloc[idx]
+
     return X_train_interim, train_label, X_test_interim, idx
 
 
@@ -175,21 +183,15 @@ train_clipped = train_org.copy()
 train_clipped['RUL'].clip(upper=125, inplace=True)
 
 # Based on MannKendall, sensor 2, 3, 4, 7, 8, 11, 12, 13, 15, 17, 20 and 21 are selected
-op_setting = ["op1", "op2", "op3"]
+drop_sensors = ['sens1', 'sens5', 'sens6', 'sens9', 'sens10', 'sens14',
+                'sens16', 'sens18', 'sens19', 'sens22', 'sens23', 'sens24', 'sens25', 'sens26']
 
-drop_labels = op_setting + ["op1", "op2", "op3", 'sens1', 'sens5', 'sens6', 'sens9', 'sens10', 'sens14',
-                            'sens16', 'sens18', 'sens19', 'sens22', 'sens23', 'sens24', 'sens25', 'sens26']
+drop_labels = drop_sensors + ["op1", "op2", "op3"]
 
 remaining_sensors = ['sens2', 'sens3', 'sens4', 'sens7', 'sens8', 'sens11',
                      'sens12', 'sens13', 'sens15', 'sens17', 'sens20', 'sens21']
 
-all_sensors = drop_labels + remaining_sensors
-
-# drop_labels = ["op1", "op2", "op3",'sens1','sens5','sens6','sens10','sens16','sens18','sens19','sens22','sens23',
-# 'sens24','sens25','sens26']
-
-# remaining_sensors = ['sens2', 'sens3', 'sens4', 'sens7', 'sens8', 'sens9', 'sens11', 'sens12', 'sens13', 'sens14',
-#                   'sens15', 'sens17', 'sens20', 'sens21']
+all_sensors = drop_sensors + remaining_sensors
 
 train_clipped_dropped = train_clipped.copy()
 train_clipped_dropped.drop(labels=drop_labels, axis=1, inplace=True)
@@ -395,83 +397,118 @@ y_hat_train = model.predict(x_train_NN_scaled[train_cols_NN])
 print("pre-tuned Neural Network")
 evaluate(y_train_NN_scaled, y_hat_train, 'train')
 
+x_test_NN_scaled = x_test_NN_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
 y_hat_test = model.predict(x_test_NN_scaled[train_cols_NN])
 evaluate(y_test, y_hat_test)
 
-# # hyperparameter tuning
-#
-# alpha_list = [0.01, 0.05] + list(np.arange(10, 60 + 1, 10) / 100)
-# epoch_list = list(np.arange(10, 30 + 1, 5))
-# nodes_list = [[16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
-#
-# # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
-# dropouts = list(np.arange(1, 5) / 10)
-#
-# # earlier testing revealed relu performed significantly worse, so I removed it from the options
-# activation_functions = ['tanh', 'sigmoid']
-# batch_size_list = [32, 64, 128, 256, 512]
-#
-# ITERATIONS = 100
-# results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
-#                                 'alpha', 'epochs',
-#                                 'nodes', 'dropout',
-#                                 'activation', 'batch_size'])
-#
-# weights_file = 'mlp_hyper_parameter_weights.h5'  # save model weights
-# specific_lags = [1, 2, 3, 4, 5, 10, 20]
-#
-# for i in range(ITERATIONS):
-#     if ITERATIONS < 10:
-#         print('iteration ', i + 1)
-#     elif ((i + 1) % 10 == 0):
-#         print('iteration ', i + 1)
-#
-#     mse = []
-#
-#     # init parameters
-#     alpha = random.sample(alpha_list, 1)[0]
-#     epochs = random.sample(epoch_list, 1)[0]
-#     nodes_per_layer = random.sample(nodes_list, 1)[0]
-#     dropout = random.sample(dropouts, 1)[0]
-#     activation = random.sample(activation_functions, 1)[0]
-#     batch_size = random.sample(batch_size_list, 1)[0]
-#
-#     # create dataset
-#     df_train, train_label, _, idx = prep_data(df_train=train.drop(drop_sensors, axis=1),
-#                                               train_label=y_train_clipped,
-#                                               df_test=test.drop(drop_sensors, axis=1),
-#                                               remaining_sensors=remaining_sensors,
-#                                               lags=specific_lags,
-#                                               alpha=alpha)
-#
-#     # create model
-#     input_dim = len(df_train.columns)
-#     model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
-#
-#     # create train-validation split
-#     gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
-#     for idx_train, idx_val in gss_search.split(df_train, train_label, groups=train.iloc[idx]['unit_nr']):
-#         X_train_split = df_train.iloc[idx_train].copy()
-#         y_train_split = train_label.iloc[idx_train].copy()
-#         X_val_split = df_train.iloc[idx_val].copy()
-#         y_val_split = train_label.iloc[idx_val].copy()
-#
-#         # train and evaluate model
-#         model.compile(loss='mean_squared_error', optimizer='adam')
-#         model.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
-#         history = model.fit(X_train_split, y_train_split,
-#                             validation_data=(X_val_split, y_val_split),
-#                             epochs=epochs,
-#                             batch_size=batch_size,
-#                             verbose=0)
-#
-#         mse.append(history.history['val_loss'][-1])
-#
-#     # append results
-#     d = {'MSE': np.mean(mse), 'std_MSE': np.std(mse), 'alpha': alpha,
-#          'epochs': epochs, 'nodes': str(nodes_per_layer), 'dropout': dropout,
-#          'activation': activation, 'batch_size': batch_size}
-#     results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
+# hyperparameter tuning
+tune = False
+if tune:
+    alpha_list = [0.01, 0.05] + list(np.arange(10, 60 + 1, 10) / 100)
+    epoch_list = list(np.arange(10, 30 + 1, 5))
+    nodes_list = [[16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
+
+    # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
+    dropouts = list(np.arange(1, 5) / 10)
+
+    # earlier testing revealed relu performed significantly worse, so I removed it from the options
+    activation_functions = ['tanh', 'sigmoid']
+    batch_size_list = [32, 64, 128, 256, 512]
+
+    ITERATIONS = 100
+    results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
+                                    'alpha', 'epochs',
+                                    'nodes', 'dropout',
+                                    'activation', 'batch_size'])
+
+    weights_file = 'mlp_hyper_parameter_weights.h5'  # save model weights
+    specific_lags = [1, 2, 3, 4, 5, 10, 20]
+
+    for i in range(ITERATIONS):
+        if i < 10:
+            print("Iteration ", str(i + 1))
+        elif ((i + 1) % 10 == 0):
+            print("Iteration ", str(i + 1))
+
+        mse = []
+
+        # init parameters
+        alpha = random.sample(alpha_list, 1)[0]
+        epochs = random.sample(epoch_list, 1)[0]
+        nodes_per_layer = random.sample(nodes_list, 1)[0]
+        dropout = random.sample(dropouts, 1)[0]
+        activation = random.sample(activation_functions, 1)[0]
+        batch_size = random.sample(batch_size_list, 1)[0]
+
+        # create dataset
+        df_train, train_label, _, idx = prep_data(df_train=train_org.drop(drop_sensors, axis=1),
+                                                  train_label=train_org['RUL'],
+                                                  df_test=x_test_org.drop(drop_sensors, axis=1),
+                                                  remaining_sensors=remaining_sensors,
+                                                  lags=specific_lags,
+                                                  alpha=alpha)
+        # create model
+        input_dim = len(df_train.columns)
+        model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
+
+        # create train-validation split
+        gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
+        for idx_train, idx_val in gss_search.split(df_train, train_label, groups=train_org.iloc[idx]['unit num']):
+            X_train_split = df_train.iloc[idx_train].copy()
+            y_train_split = train_label.iloc[idx_train].copy()
+            X_val_split = df_train.iloc[idx_val].copy()
+            y_val_split = train_label.iloc[idx_val].copy()
+
+            # train and evaluate model
+            model.compile(loss='mean_squared_error', optimizer='adam')
+            model.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
+            history = model.fit(X_train_split, y_train_split,
+                                validation_data=(X_val_split, y_val_split),
+                                epochs=epochs, batch_size=batch_size, verbose=0)
+            mse.append(history.history['val_loss'][-1])
+
+        # append results
+        d = {'MSE': np.mean(mse), 'std_MSE': np.std(mse), 'alpha': alpha,
+             'epochs': epochs, 'nodes': str(nodes_per_layer), 'dropout': dropout,
+             'activation': activation, 'batch_size': batch_size}
+        results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
+
+    results.to_csv("hyp_results", index=False)
+
+alpha = 0.4
+epochs = 30
+specific_lags = [1, 2, 3, 4, 5, 10, 20]
+nodes = [128, 256, 512]
+dropout = 0.4
+activation = 'sigmoid'
+batch_size = 64
+
+df_train, train_label, df_test, _ = prep_data(df_train=train_org.drop(drop_sensors, axis=1),
+                                              train_label=train_org['RUL'],
+                                              df_test=x_test_org.drop(drop_sensors, axis=1),
+                                              remaining_sensors=remaining_sensors,
+                                              lags=specific_lags,
+                                              alpha=alpha)
+input_dim = len(df_train.columns)
+weights_file = 'mlp_hyper_parameter_weights'
+final_model = create_model(input_dim,
+                           nodes_per_layer=nodes,
+                           dropout=dropout,
+                           activation=activation,
+                           weights_file=weights_file)
+
+final_model.compile(loss='mean_squared_error', optimizer='adam')
+final_model.load_weights(weights_file)
+
+final_model.fit(df_train, train_label, epochs=epochs, batch_size=batch_size, verbose=0)
+
+# predict and evaluate
+print("tuned Neural Network")
+y_hat_train = final_model.predict(df_train)
+evaluate(train_label, y_hat_train, 'train')
+
+y_hat_test = final_model.predict(df_test)
+evaluate(y_test, y_hat_test)
 
 ################################
 #   Random Survival Forest
