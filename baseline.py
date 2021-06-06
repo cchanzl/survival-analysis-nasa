@@ -32,6 +32,9 @@ y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
 df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
+# create df to append result of each model
+results_header = ["model_name", "train_test", "RMSE", "R2"]
+list_results = []
 
 ##########################
 #   Helper Functions
@@ -59,6 +62,7 @@ def evaluate(y_true, y_hat, label='test'):
     rmse = np.sqrt(mse)
     variance = r2_score(y_true, y_hat)
     print('{} set RMSE:{:.2f}, R2:{:.2f}'.format(label, rmse, variance))
+    return label, rmse, variance
 
 
 def exponential_model(z, a, b):
@@ -308,12 +312,16 @@ popt, pcov = curve_fit(exponential_model, train_cox['hazard'], train_cox['RUL'])
 # perform prediction solely on log-partial hazard and evaluate
 y_hat = exponential_model(train_cox['hazard'], *popt)
 print("fitted exponential curve")
-evaluate(train_cox['RUL'], y_hat, 'train')
+label, rmse, variance = evaluate(train_cox['RUL'], y_hat, 'train')
+Cox_train = ["Cox", label, rmse, variance]
+list_results.append(Cox_train)
 
 y_test.drop(y_test.columns[1], axis=1, inplace=True)
 y_pred = ctv.predict_log_partial_hazard(x_test_dropped.groupby('unit num').last().reset_index())
 y_hat = exponential_model(y_pred, *popt)
-evaluate(y_test, y_hat)
+label, rmse, variance = evaluate(y_test, y_hat)
+Cox_test = ["Cox", label, rmse, variance]
+list_results.append(Cox_test)
 
 ################################
 #   Random Forest
@@ -333,10 +341,14 @@ rf.fit(x_train_rf, y_train_rf)
 # predict and evaluate, without any hyperparameter tuning
 y_hat_train = rf.predict(x_train_rf)
 print("pre-tuned RF")
-evaluate(y_train_rf, y_hat_train, 'train')
+label, rmse, variance = evaluate(y_train_rf, y_hat_train, 'train')
+RF_train = ["RF (pre-tuned)", label, rmse, variance]
+list_results.append(RF_train)
 
 y_hat_test = rf.predict(x_test_dropped.groupby('unit num').last())
-evaluate(y_test, y_hat_test)
+label, rmse, variance = evaluate(y_test, y_hat_test)
+RF_test = ["RF (pre-tuned)", label, rmse, variance]
+list_results.append(RF_test)
 
 # perform some checks on layout of a SINGLE tree
 # print(rf.estimators_[5].tree_.max_depth)  # check how many nodes in the longest path
@@ -350,10 +362,14 @@ rf.fit(x_train_rf, y_train_rf)
 # predict and evaluate
 y_hat_train = rf.predict(x_train_rf)
 print("crudely tuned RF")
-evaluate(y_train_rf, y_hat_train, 'train')
+label, rmse, variance = evaluate(y_train_rf, y_hat_train, 'train')
+RF_train = ["RF (tuned)", label, rmse, variance]
+list_results.append(RF_train)
 
 y_hat_test = rf.predict(x_test_dropped.groupby('unit num').last())
-evaluate(y_test, y_hat_test)
+label, rmse, variance = evaluate(y_test, y_hat_test)
+RF_test = ["RF (tuned)", label, rmse, variance]
+list_results.append(RF_test)
 
 ################################
 #   Neural Network
@@ -395,11 +411,15 @@ history = model.fit(x_train_NN_scaled[train_cols_NN], y_train_NN_scaled,
 
 y_hat_train = model.predict(x_train_NN_scaled[train_cols_NN])
 print("pre-tuned Neural Network")
-evaluate(y_train_NN_scaled, y_hat_train, 'train')
+label, rmse, variance = evaluate(y_train_NN_scaled, y_hat_train, 'train')
+NN_train = ["NN (pre-tuned)", label, rmse, variance]
+list_results.append(NN_train)
 
 x_test_NN_scaled = x_test_NN_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
 y_hat_test = model.predict(x_test_NN_scaled[train_cols_NN])
-evaluate(y_test, y_hat_test)
+label, rmse, variance = evaluate(y_test, y_hat_test)
+NN_test = ["NN (pre-tuned)", label, rmse, variance]
+list_results.append(NN_test)
 
 # hyperparameter tuning
 tune = False
@@ -505,10 +525,14 @@ final_model.fit(df_train, train_label, epochs=epochs, batch_size=batch_size, ver
 # predict and evaluate
 print("tuned Neural Network")
 y_hat_train = final_model.predict(df_train)
-evaluate(train_label, y_hat_train, 'train')
+label, rmse, variance = evaluate(train_label, y_hat_train, 'train')
+NN_train = ["NN (tuned)", label, rmse, variance]
+list_results.append(NN_train)
 
 y_hat_test = final_model.predict(df_test)
-evaluate(y_test, y_hat_test)
+label, rmse, variance = evaluate(y_test, y_hat_test)
+NN_test = ["NN (tuned)", label, rmse, variance]
+list_results.append(NN_test)
 
 ################################
 #   Random Survival Forest
@@ -516,3 +540,12 @@ evaluate(y_test, y_hat_test)
 
 print(delimiter)
 print("Started Random Survival Forest")
+
+
+################################
+#   Save results of each model
+################################
+
+df_results = pd.DataFrame(list_results, columns=results_header)
+print(df_results)
+df_results.to_csv("saved_results.csv")
