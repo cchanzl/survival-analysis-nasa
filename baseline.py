@@ -4,17 +4,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error ten
 import pandas as pd
 import numpy as np
 import random
-from scipy import stats
 import matplotlib.pyplot as plt
 from lifelines import KaplanMeierFitter, CoxTimeVaryingFitter
+from lifelines.utils import restricted_mean_survival_time
 from scipy.optimize import curve_fit
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.ensemble import RandomForestRegressor
-import tensorflow as tf
+from sksurv.ensemble import RandomSurvivalForest
+from sksurv.util import Surv
+from sklearn.model_selection import train_test_split
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+import pickle
 
 ##########################
 #   Loading Data
@@ -173,7 +176,7 @@ def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=
 
 
 ################################
-#   General Data preprocessing
+#   General Data pre-processing
 ################################
 
 print(delimiter)
@@ -219,6 +222,7 @@ x_test_dropped = x_test_org.copy()
 x_test_dropped.drop(labels=drop_labels, axis=1, inplace=True)
 x_test_dropped['breakdown'] = 0
 x_test_dropped['start'] = x_test_dropped['cycle'] - 1
+y_test.drop(y_test.columns[1], axis=1, inplace=True)
 
 # Initilise columns used for training and prediction
 train_cols = ['unit num', 'cycle'] + remaining_sensors + ['start', 'breakdown']
@@ -231,15 +235,30 @@ predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdo
 print(delimiter)
 print("Started Kaplan-Meier")
 
-data = train_censored[['unit num', 'cycle', 'breakdown']].groupby('unit num').last()
+data = train_censored[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
 
 plt.figure(figsize=(15, 7))
-survival = KaplanMeierFitter()
-survival.fit(data['cycle'], data['breakdown'])
-# survival.plot()
+kaplanMeier = KaplanMeierFitter()
+kaplanMeier.fit(data['cycle'], data['breakdown'])
+
+# kaplanMeier.plot()
 # plt.ylabel("Probability of survival")
 # plt.show()
 # plt.close()
+
+# estimate restricted mean survival time from KM curve
+km_rmst = restricted_mean_survival_time(kaplanMeier, t=cut_off)
+data['km_rmst'] = km_rmst
+
+label, rmse, variance = evaluate(data['RUL'], data['km_rmst'], 'train')
+KM_train = ["KM_rmst", label, rmse, variance]
+list_results.append(KM_train)
+
+y_hat = [km_rmst for x in range(len(y_test))]
+label, rmse, variance = evaluate(y_test, y_hat)
+KM_test = ["KM_rmst", label, rmse, variance]
+list_results.append(KM_test)
+
 
 ################################
 #   Cox-PH Model
@@ -316,7 +335,6 @@ label, rmse, variance = evaluate(train_cox['RUL'], y_hat, 'train')
 Cox_train = ["Cox", label, rmse, variance]
 list_results.append(Cox_train)
 
-y_test.drop(y_test.columns[1], axis=1, inplace=True)
 y_pred = ctv.predict_log_partial_hazard(x_test_dropped.groupby('unit num').last().reset_index())
 y_hat = exponential_model(y_pred, *popt)
 label, rmse, variance = evaluate(y_test, y_hat)
@@ -379,9 +397,12 @@ list_results.append(RF_test)
 
 print(delimiter)
 print("Started Neural Network")
-
+print("check the data set entering the NN is using censored and has the correct columns")
 # preprocess data by performing scaling using MinMax on the original dataset before dropping, clipping and censoring
-x_train_NN_scaled, x_test_NN_scaled = minmax_scaler(train_org, x_test_org, all_sensors)
+train_NN = train_org.copy()
+attribute_dropped = ['cycle', 'op1', 'op2', 'op3']
+train_NN = train_NN.drop(attribute_dropped, axis=1)
+x_train_NN_scaled, x_test_NN_scaled = minmax_scaler(train_NN, x_test_org, all_sensors)
 y_train_NN_scaled = x_train_NN_scaled.pop('RUL')
 
 # split scaled dataset into train test split
@@ -541,11 +562,56 @@ list_results.append(NN_test)
 print(delimiter)
 print("Started Random Survival Forest")
 
+rsf = RandomSurvivalForest(n_estimators=20, n_jobs=-1)
+rsf_x = train_censored.copy()
+rsf_x['RUL'] = rsf_x.RUL.astype('float')
+
+rsf_y = rsf_x[['breakdown', 'RUL']]
+rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
+rsf_y['breakdown'].replace(1, True, inplace=True)   # rsf only takes true or false
+
+attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
+rsf_x = rsf_x.drop(attribute_dropped, axis=1)
+rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25)
+
+random_state = 20
+train = False
+filename = 'finalized_rsf_model.sav'
+if train:
+    rsf = RandomSurvivalForest(n_estimators=1000,
+                               min_samples_split=10,
+                               min_samples_leaf=15,
+                               max_features="sqrt",
+                               n_jobs=-1,
+                               random_state=random_state)
+    print("Fitting rsf")
+    rsf.fit(rsf_x_train, Surv.from_dataframe('breakdown', 'RUL', rsf_y_train))  # y only takes structured data
+    pickle.dump(rsf, open(filename, 'wb'))  # save trained model
+
+print("Predicting rsf")
+rsf = pickle.load(open(filename, 'rb'))
+print(rsf_x_val.info())
+print(rsf_x_train.info())
+surv = rsf.predict_survival_function(rsf_x_val, return_array = True)  # return the survival function for each data point
+rsf_predictions = []  # create a list to store the rmst of each survival curve
+
+print(len(rsf_x_val))
+for i, s in enumerate(surv):
+    print(i)
+    km_rmst = restricted_mean_survival_time(s, t=cut_off)  # calculate restricted mean survival time
+    rsf_predictions.append(km_rmst)
+
+label, rmse, variance = evaluate(rsf_y_val, rsf_predictions)
+rsf_train = ["rsf (pre-tuned)", label, rmse, variance]
+list_results.append(rsf_train)
 
 ################################
 #   Save results of each model
 ################################
 
-df_results = pd.DataFrame(list_results, columns=results_header)
+print(delimiter)
+print("Saving all results")
+df_results = pd.DataFrame(list_results, columns=results_header, mode='a', header=False)
+df_results["timestamp"] = pd.to_datetime('today').normalize()
 print(df_results)
 df_results.to_csv("saved_results.csv")
