@@ -1,4 +1,5 @@
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
 
 import pandas as pd
@@ -16,6 +17,7 @@ from sksurv.util import Surv
 from sklearn.model_selection import train_test_split
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Dense, Dropout
+from keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import pickle
 
@@ -38,6 +40,7 @@ x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=head
 # create df to append result of each model
 results_header = ["model_name", "train_test", "RMSE", "R2"]
 list_results = []
+
 
 ##########################
 #   Helper Functions
@@ -121,7 +124,7 @@ def minmax_scaler(df_train, df_test, sensor_names):
 
     # scale test set
     df_test_scaled = df_test.copy()
-    #df_test_scaled = df_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
+    # df_test_scaled = df_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
     df_test_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_test_scaled[sensor_names]),
                                                 columns=sensor_names,
                                                 index=df_test_scaled.index)
@@ -156,7 +159,6 @@ def exponential_smoothing(df, sensors, n_samples, alpha=0.4):
 
 
 def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=0):
-
     X_train_interim, X_test_interim = minmax_scaler(df_train, df_test, remaining_sensors)
 
     X_train_interim = exponential_smoothing(X_train_interim, remaining_sensors, n, alpha)
@@ -214,8 +216,7 @@ train_clipped_dropped['start'] = train_clipped_dropped['cycle'] - 1
 
 # Apply cut-off
 cut_off = 200  # Important to improve accuracy
-train_censored = train_clipped_dropped[
-    train_clipped_dropped['cycle'] <= cut_off].copy()  # Final dataset to use for all model
+train_censored = train_clipped_dropped[train_clipped_dropped['cycle'] <= cut_off].copy()  # Final dataset to use for all model
 
 # prep test set
 x_test_dropped = x_test_org.copy()
@@ -258,7 +259,6 @@ y_hat = [km_rmst for x in range(len(y_test))]
 label, rmse, variance = evaluate(y_test, y_hat)
 KM_test = ["KM_rmst", label, rmse, variance]
 list_results.append(KM_test)
-
 
 ################################
 #   Cox-PH Model
@@ -415,21 +415,25 @@ X_train_split_scaled, y_train_split_scaled, X_val_split_scaled, y_val_split_scal
 train_cols_NN = remaining_sensors  # select columns used for trg in NN
 input_dim = len(train_cols_NN)
 
-# construct neural network
-model = Sequential()
-model.add(Dense(16, input_dim=input_dim, activation='relu'))
-model.add(Dense(32, activation='relu'))
-model.add(Dense(64, activation='relu'))
-model.add(Dense(1))
-model.compile(loss='mean_squared_error', optimizer='adam')
-
 # training the model
-epochs = 20
-history = model.fit(x_train_NN_scaled[train_cols_NN], y_train_NN_scaled,
-                    validation_data=(X_val_split_scaled[train_cols_NN], y_val_split_scaled),
-                    epochs=epochs, verbose=0)
-# plot_loss(history)
+train = False
+filename = 'finalized_pretuned_NN_model.h5'
+if train:
+    # construct neural network
+    model = Sequential()
+    model.add(Dense(16, input_dim=input_dim, activation='relu'))
+    model.add(Dense(32, activation='relu'))
+    model.add(Dense(64, activation='relu'))
+    model.add(Dense(1))
+    model.compile(loss='mean_squared_error', optimizer='adam')
 
+    epochs = 20
+    history = model.fit(x_train_NN_scaled[train_cols_NN], y_train_NN_scaled,
+                        validation_data=(X_val_split_scaled[train_cols_NN], y_val_split_scaled),
+                        epochs=epochs, verbose=0)
+    model.save(filename)  # save trained model
+
+model = load_model(filename)
 y_hat_train = model.predict(x_train_NN_scaled[train_cols_NN])
 print("pre-tuned Neural Network")
 label, rmse, variance = evaluate(y_train_NN_scaled, y_hat_train, 'train')
@@ -525,25 +529,31 @@ activation = 'sigmoid'
 batch_size = 64
 
 df_train, train_label, df_test, _ = prep_data(df_train=train_org.drop(drop_sensors, axis=1),
-                                              train_label=train_org['RUL'],
-                                              df_test=x_test_org.drop(drop_sensors, axis=1),
-                                              remaining_sensors=remaining_sensors,
-                                              lags=specific_lags,
-                                              alpha=alpha)
-input_dim = len(df_train.columns)
-weights_file = 'mlp_hyper_parameter_weights'
-final_model = create_model(input_dim,
-                           nodes_per_layer=nodes,
-                           dropout=dropout,
-                           activation=activation,
-                           weights_file=weights_file)
+                                                  train_label=train_org['RUL'],
+                                                  df_test=x_test_org.drop(drop_sensors, axis=1),
+                                                  remaining_sensors=remaining_sensors,
+                                                  lags=specific_lags,
+                                                  alpha=alpha)
 
-final_model.compile(loss='mean_squared_error', optimizer='adam')
-final_model.load_weights(weights_file)
+train = False
+filename = 'finalized_tuned_NN_model.h5'
+if train:
+    input_dim = len(df_train.columns)
+    weights_file = 'mlp_hyper_parameter_weights'
+    final_model = create_model(input_dim,
+                               nodes_per_layer=nodes,
+                               dropout=dropout,
+                               activation=activation,
+                               weights_file=weights_file)
 
-final_model.fit(df_train, train_label, epochs=epochs, batch_size=batch_size, verbose=0)
+    final_model.compile(loss='mean_squared_error', optimizer='adam')
+    final_model.load_weights(weights_file)
+
+    final_model.fit(df_train, train_label, epochs=epochs, batch_size=batch_size, verbose=0)
+    final_model.save(filename)  # save trained model
 
 # predict and evaluate
+final_model = load_model(filename)
 print("tuned Neural Network")
 y_hat_train = final_model.predict(df_train)
 label, rmse, variance = evaluate(train_label, y_hat_train, 'train')
@@ -562,37 +572,90 @@ list_results.append(NN_test)
 print(delimiter)
 print("Started Random Survival Forest")
 
-rsf = RandomSurvivalForest(n_estimators=20, n_jobs=-1)
 rsf_x = train_censored.copy()
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
 
-rsf_y = rsf_x[['breakdown', 'RUL']]
+rsf_y = rsf_x[['breakdown', 'cycle']]
 rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
-rsf_y['breakdown'].replace(1, True, inplace=True)   # rsf only takes true or false
+rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 
 attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
 rsf_x = rsf_x.drop(attribute_dropped, axis=1)
 rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25)
 
 random_state = 20
-train = False
+train = True
 filename = 'finalized_rsf_model.sav'
 if train:
-    rsf = RandomSurvivalForest(n_estimators=1000,
-                               min_samples_split=10,
-                               min_samples_leaf=15,
+    rsf = RandomSurvivalForest(n_estimators=10,
+                               min_samples_split=100,
+                               min_samples_leaf=150,
                                max_features="sqrt",
                                n_jobs=-1,
                                random_state=random_state)
     print("Fitting rsf")
-    rsf.fit(rsf_x_train, Surv.from_dataframe('breakdown', 'RUL', rsf_y_train))  # y only takes structured data
+    rsf.fit(rsf_x_train, Surv.from_dataframe('breakdown', 'cycle', rsf_y_train))  # y only takes structured data
     pickle.dump(rsf, open(filename, 'wb'))  # save trained model
+
+#######################################################################################################################
+# from sklearn.preprocessing import OrdinalEncoder
+# from sksurv.datasets import load_gbsg2
+# from sksurv.preprocessing import OneHotEncoder
+#
+# X, y = load_gbsg2()
+#
+# grade_str = X.loc[:, "tgrade"].astype(object).values[:, np.newaxis]
+# grade_num = OrdinalEncoder(categories=[["I", "II", "III"]]).fit_transform(grade_str)
+#
+# X_no_grade = X.drop("tgrade", axis=1)
+# Xt = OneHotEncoder().fit_transform(X_no_grade)
+# Xt = np.column_stack((Xt.values, grade_num))
+#
+# feature_names = X_no_grade.columns.tolist() + ["tgrade"]
+#
+# random_state = 20
+# X_train, X_test, y_train, y_test = train_test_split(Xt, y, test_size=0.25, random_state=random_state)
+#
+# rsf = RandomSurvivalForest(n_estimators=1000,
+#                            min_samples_split=10,
+#                            min_samples_leaf=15,
+#                            max_features="sqrt",
+#                            n_jobs=-1,
+#                            random_state=random_state)
+# rsf.fit(X_train, y_train)
+#
+# print("The rsf score for example is: ", rsf.score(X_test, y_test))
+#
+# a = np.empty(X_test.shape[0], dtype=[("age", float), ("pnodes", float)])
+# a["age"] = X_test[:, 0]
+# a["pnodes"] = X_test[:, 4]
+#
+# sort_idx = np.argsort(a, order=["pnodes", "age"])
+# X_test_sel = pd.DataFrame(
+#     X_test[np.concatenate((sort_idx[:3], sort_idx[-3:]))],
+#     columns=feature_names)
+# print(type(X_test_sel))
+# print(X_test_sel)
+# print(pd.Series(rsf.predict(X_test_sel)))
+#######################################################################################################################
 
 print("Predicting rsf")
 rsf = pickle.load(open(filename, 'rb'))
-print(rsf_x_val.info())
-print(rsf_x_train.info())
-surv = rsf.predict_survival_function(rsf_x_val, return_array = True)  # return the survival function for each data point
+
+# print(type(rsf_x_val.to_numpy()))
+# print(type(Surv.from_dataframe('breakdown', 'RUL', rsf_y_val)))
+# print(rsf_x_val.shape)
+# print(rsf_x_val.to_numpy())
+# print(rsf_x_val.to_numpy().shape)
+# print(Surv.from_dataframe('breakdown', 'RUL', rsf_y_val).shape)
+# print(Surv.from_dataframe('breakdown', 'RUL', rsf_y_val))
+print(type(rsf_x_val))
+print(rsf_x_val.iloc[0:2, :])
+
+pred_risk = rsf.predict(rsf_x_val.iloc[0:2, :])
+surv = rsf.predict_survival_function(rsf_x_val, return_array=True)  # return the survival function for each data point
+print(rsf.score(rsf_x_val, Surv.from_dataframe('breakdown', 'cycle', rsf_y_val)))
+
 rsf_predictions = []  # create a list to store the rmst of each survival curve
 
 print(len(rsf_x_val))
