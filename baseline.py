@@ -18,9 +18,10 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from keras.models import load_model
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import pickle
-from datetime import datetime
+from sksurv.metrics import concordance_index_censored as ci_scikit
+from datetime import datetime  # to timestamp results of each model
 
 ##########################
 #   Loading Data
@@ -39,7 +40,7 @@ df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=h
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
 # create df to append result of each model
-results_header = ["model_name", "train_test", "RMSE", "R2"]
+results_header = ["model_name", "train_test", "RMSE", "CI_SK", "R2"]
 list_results = []
 
 
@@ -64,23 +65,32 @@ def add_remaining_useful_life(df):
     return result_frame
 
 
-def evaluate(y_true, y_hat, label='test'):
+def evaluate(model, y_true, y_hat, breakdown, label='test'):
+    breakdown.replace(0, False, inplace=True)  # rsf only takes true or false
+    breakdown.replace(1, True, inplace=True)  # rsf only takes true or false
+
     mse = mean_squared_error(y_true, y_hat)
     rmse = np.sqrt(mse)
     variance = r2_score(y_true, y_hat)
-    print('{} set RMSE:{:.2f}, R2:{:.2f}'.format(label, rmse, variance))
-    return label, rmse, variance
+
+    # the concordance index is interested on the order of the predictions, not the predictions themselves
+    # https://medium.com/analytics-vidhya/concordance-index-72298c11eac7#:~:text=The%20concordance%20index%20or%20c,this%20definition%20mean%20in%20practice
+    ci_sk = ci_scikit(breakdown.to_numpy(), y_true, y_hat)[0]
+
+    print('{} set RMSE:{:.2f}, CI(scikit):{:.4f}, R2:{:.2f}'.format(label, rmse, ci_sk, variance))
+    result = [model, label, rmse, ci_sk, variance]
+    return result
 
 
 def exponential_model(z, a, b):
     return a * np.exp(-b * z)
 
 
-def train_val_group_split(X, y, gss, groups, print_groups=True):
+def train_val_group_split(X, y, gss, groups, print_groups=False):
     for idx_train, idx_val in gss.split(X, y, groups=groups):
-        # if print_groups:
-        # print('train_split_engines', train_clipped_dropped.iloc[idx_train]['unit num'].unique(), '\n')
-        # print('validate_split_engines', train_clipped_dropped.iloc[idx_val]['unit num'].unique(), '\n')
+        if print_groups:
+            print('train_split_engines', train_clipped_dropped.iloc[idx_train]['unit num'].unique(), '\n')
+            print('validate_split_engines', train_clipped_dropped.iloc[idx_val]['unit num'].unique(), '\n')
 
         X_train_split = X.iloc[idx_train].copy()
         y_train_split = y.iloc[idx_train].copy()
@@ -159,8 +169,9 @@ def exponential_smoothing(df, sensors, n_samples, alpha=0.4):
     return df
 
 
-def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=0):
-    X_train_interim, X_test_interim = minmax_scaler(df_train, df_test, remaining_sensors)
+# prepare data for neural network
+def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
+    X_train_interim, X_test_interim = minmax_scaler(x_train, x_test, remaining_sensors)
 
     X_train_interim = exponential_smoothing(X_train_interim, remaining_sensors, n, alpha)
     X_test_interim = exponential_smoothing(X_test_interim, remaining_sensors, n, alpha)
@@ -168,14 +179,15 @@ def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=
     X_train_interim = add_specific_lags(X_train_interim, lags, remaining_sensors)
     X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
 
-    X_train_interim.drop(['op1', 'op2', 'op3', 'unit num', 'cycle', 'RUL'], axis=1, inplace=True)
-    X_test_interim.drop(['op1', 'op2', 'op3', 'cycle'], axis=1, inplace=True)
+    X_train_breakdown = X_train_interim['breakdown']
+    X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown'], axis=1, inplace=True)
     X_test_interim = X_test_interim.groupby('unit num').last().copy()
+    X_test_interim.drop(['cycle', 'breakdown', 'start'], axis=1, inplace=True)
 
     idx = X_train_interim.index
-    train_label = train_label.iloc[idx]
+    y_train = y_train.iloc[idx]
 
-    return X_train_interim, train_label, X_test_interim, idx
+    return X_train_interim, y_train, X_test_interim, idx, X_train_breakdown
 
 
 ################################
@@ -184,13 +196,6 @@ def prep_data(df_train, train_label, df_test, remaining_sensors, lags, alpha, n=
 
 print(delimiter)
 print("Started data preprocessing")
-
-# add RUL column
-train_org = add_remaining_useful_life(df_train_001)
-
-# apply a floor to RUL. 125 is selected as the min cycle is 128. See EDA.
-train_clipped = train_org.copy()
-train_clipped['RUL'].clip(upper=125, inplace=True)
 
 # Based on MannKendall, sensor 2, 3, 4, 7, 8, 11, 12, 13, 15, 17, 20 and 21 are selected
 drop_sensors = ['sens1', 'sens5', 'sens6', 'sens9', 'sens10', 'sens14',
@@ -203,28 +208,37 @@ remaining_sensors = ['sens2', 'sens3', 'sens4', 'sens7', 'sens8', 'sens11',
 
 all_sensors = drop_sensors + remaining_sensors
 
-train_clipped_dropped = train_clipped.copy()
-train_clipped_dropped.drop(labels=drop_labels, axis=1, inplace=True)
+# add RUL column
+train_org = add_remaining_useful_life(df_train_001)
 
-# Add event indicator column
-train_clipped_dropped['breakdown'] = 0
-idx_last_record = train_clipped_dropped.reset_index().groupby(by='unit num')[
+# drop irrelevant sensors
+train_org.drop(drop_labels, axis=1, inplace=True)
+
+# add event indicator column
+train_org['breakdown'] = 0
+idx_last_record = train_org.reset_index().groupby(by='unit num')[
     'index'].last()  # engines breakdown at the last cycle
-train_clipped_dropped.at[idx_last_record, 'breakdown'] = 1
+train_org.at[idx_last_record, 'breakdown'] = 1
+
+# apply a floor to RUL. 125 is selected as the min cycle is 128. See EDA.
+train_clipped = train_org.copy()
+train_clipped['RUL'].clip(upper=125, inplace=True)
+train_clipped_dropped = train_clipped.copy()
 
 # Add start cycle column
 train_clipped_dropped['start'] = train_clipped_dropped['cycle'] - 1
 
 # Apply cut-off
 cut_off = 200  # Important to improve accuracy
-train_censored = train_clipped_dropped[
-    train_clipped_dropped['cycle'] <= cut_off].copy()  # Final dataset to use for all model
+train_censored = train_clipped_dropped[train_clipped_dropped['cycle'] <= cut_off].copy()
 
 # prep test set
-x_test_dropped = x_test_org.copy()
-x_test_dropped.drop(labels=drop_labels, axis=1, inplace=True)
-x_test_dropped['breakdown'] = 0
-x_test_dropped['start'] = x_test_dropped['cycle'] - 1
+x_test_org.drop(labels=drop_labels, axis=1, inplace=True)
+x_test_org['breakdown'] = 0
+idx_last_record = x_test_org.reset_index().groupby(by='unit num')[
+    'index'].last()  # engines breakdown at the last cycle
+x_test_org.at[idx_last_record, 'breakdown'] = 1
+x_test_org['start'] = x_test_org['cycle'] - 1
 y_test.drop(y_test.columns[1], axis=1, inplace=True)
 
 # Initilise columns used for training and prediction
@@ -253,15 +267,13 @@ kaplanMeier.fit(data['cycle'], data['breakdown'])
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=cut_off)
 data['km_rmst'] = km_rmst
 
-label, rmse, variance = evaluate(data['RUL'], data['km_rmst'], 'train')
-KM_train = ["KM_rmst", label, rmse, variance]
-list_results.append(KM_train)
+result = evaluate("KM_rmst", data['RUL'], data['km_rmst'], data['breakdown'], 'train')
+list_results.append(result)
 
 km_rmst_arr = [km_rmst for x in range(len(y_test))]
 y_hat = km_rmst_arr - x_test_org.groupby('unit num').last()['cycle']
-label, rmse, variance = evaluate(y_test, y_hat)
-KM_test = ["KM_rmst", label, rmse, variance]
-list_results.append(KM_test)
+result = evaluate("KM_rmst", y_test[0], y_hat, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+list_results.append(result)
 
 ################################
 #   Cox-PH Model
@@ -334,15 +346,13 @@ popt, pcov = curve_fit(exponential_model, train_cox['hazard'], train_cox['RUL'])
 # perform prediction solely on log-partial hazard and evaluate
 y_hat = exponential_model(train_cox['hazard'], *popt)
 print("fitted exponential curve")
-label, rmse, variance = evaluate(train_cox['RUL'], y_hat, 'train')
-Cox_train = ["Cox", label, rmse, variance]
-list_results.append(Cox_train)
+result = evaluate("Cox", train_cox['RUL'], y_hat, train_cox['breakdown'], 'train')
+list_results.append(result)
 
-y_pred = ctv.predict_log_partial_hazard(x_test_dropped.groupby('unit num').last().reset_index())
+y_pred = ctv.predict_log_partial_hazard(x_test_org.groupby('unit num').last().reset_index())
 y_hat = exponential_model(y_pred, *popt)
-label, rmse, variance = evaluate(y_test, y_hat)
-Cox_test = ["Cox", label, rmse, variance]
-list_results.append(Cox_test)
+result = evaluate('Cox', y_test[0], y_hat, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+list_results.append(result)
 
 ################################
 #   Random Forest
@@ -360,16 +370,14 @@ y_train_rf = x_train_rf.pop('RUL')
 rf.fit(x_train_rf, y_train_rf)
 
 # predict and evaluate, without any hyperparameter tuning
-y_hat_train = rf.predict(x_train_rf)
+y_hat_val = rf.predict(x_train_rf)
 print("pre-tuned RF")
-label, rmse, variance = evaluate(y_train_rf, y_hat_train, 'train')
-RF_train = ["RF (pre-tuned)", label, rmse, variance]
-list_results.append(RF_train)
+result = evaluate('RF (pre-tuned)', y_train_rf, y_hat_val, x_train_rf['breakdown'], 'train')
+list_results.append(result)
 
-y_hat_test = rf.predict(x_test_dropped.groupby('unit num').last())
-label, rmse, variance = evaluate(y_test, y_hat_test)
-RF_test = ["RF (pre-tuned)", label, rmse, variance]
-list_results.append(RF_test)
+y_hat_test = rf.predict(x_test_org.groupby('unit num').last())
+result = evaluate("RF (pre-tuned)", y_test[0], y_hat_test, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+list_results.append(result)
 
 # perform some checks on layout of a SINGLE tree
 # print(rf.estimators_[5].tree_.max_depth)  # check how many nodes in the longest path
@@ -381,16 +389,17 @@ rf = RandomForestRegressor(n_estimators=100, max_features="sqrt", random_state=4
 rf.fit(x_train_rf, y_train_rf)
 
 # predict and evaluate
-y_hat_train = rf.predict(x_train_rf)
+y_hat_val = rf.predict(x_train_rf)
 print("crudely tuned RF")
-label, rmse, variance = evaluate(y_train_rf, y_hat_train, 'train')
-RF_train = ["RF (tuned)", label, rmse, variance]
-list_results.append(RF_train)
+result = evaluate('RF (tuned)', y_train_rf, y_hat_val, x_train_rf['breakdown'], 'train')
+list_results.append(result)
 
-y_hat_test = rf.predict(x_test_dropped.groupby('unit num').last())
-label, rmse, variance = evaluate(y_test, y_hat_test)
-RF_test = ["RF (tuned)", label, rmse, variance]
-list_results.append(RF_test)
+y_hat_test = rf.predict(x_test_org.groupby('unit num').last())
+result = evaluate("RF (tuned)", y_test[0], y_hat_test, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+# to_compare = y_test.copy()
+# to_compare["pred"] = y_hat_test.tolist()
+# print(to_compare)
+list_results.append(result)
 
 ################################
 #   Neural Network
@@ -400,22 +409,20 @@ list_results.append(RF_test)
 
 print(delimiter)
 print("Started Neural Network")
-print("check the data set entering the NN is using censored and has the correct columns")
-# preprocess data by performing scaling using MinMax on the original dataset before dropping, clipping and censoring
+# copy original full dataset
 train_NN = train_org.copy()
-attribute_dropped = ['cycle', 'op1', 'op2', 'op3']
-train_NN = train_NN.drop(attribute_dropped, axis=1)
-x_train_NN_scaled, x_test_NN_scaled = minmax_scaler(train_NN, x_test_org, all_sensors)
-y_train_NN_scaled = x_train_NN_scaled.pop('RUL')
+
+# scaling using minmax
+nn_y_train = train_NN.pop('RUL')
+nn_x_train_scaled, nn_x_test_scaled = minmax_scaler(train_NN, x_test_org, remaining_sensors)
 
 # split scaled dataset into train test split
 gss = GroupShuffleSplit(n_splits=1, train_size=0.80,
                         random_state=42)  # even though we set np and tf seeds, gss requires its own seed
-split_result = train_val_group_split(x_train_NN_scaled, y_train_NN_scaled, gss, train_clipped_dropped['unit num'],
-                                     print_groups=True)
-X_train_split_scaled, y_train_split_scaled, X_val_split_scaled, y_val_split_scaled = split_result
+split_result = train_val_group_split(nn_x_train_scaled, nn_y_train, gss, nn_x_train_scaled['unit num'])
+nn_x_train_scaled, nn_y_train, nn_x_val, nn_y_val = split_result
 
-train_cols_NN = remaining_sensors  # select columns used for trg in NN
+train_cols_NN = remaining_sensors  # select columns used for trg in NN. Only used for baseline NN model
 input_dim = len(train_cols_NN)
 
 # training the model
@@ -431,23 +438,22 @@ if train:
     model.compile(loss='mean_squared_error', optimizer='adam')
 
     epochs = 20
-    history = model.fit(x_train_NN_scaled[train_cols_NN], y_train_NN_scaled,
-                        validation_data=(X_val_split_scaled[train_cols_NN], y_val_split_scaled),
+    history = model.fit(nn_x_train_scaled[train_cols_NN], nn_y_train,
+                        validation_data=(nn_x_val[train_cols_NN], nn_y_val),
                         epochs=epochs, verbose=0)
     model.save(filename)  # save trained model
 
 model = load_model(filename)
-y_hat_train = model.predict(x_train_NN_scaled[train_cols_NN])
+y_hat_val = model.predict(nn_x_val[train_cols_NN])
 print("pre-tuned Neural Network")
-label, rmse, variance = evaluate(y_train_NN_scaled, y_hat_train, 'train')
-NN_train = ["NN (pre-tuned)", label, rmse, variance]
-list_results.append(NN_train)
+result = evaluate("NN (pre-tuned)", nn_y_val, y_hat_val.flatten(), nn_x_val['breakdown'], 'train')
+list_results.append(result)
 
-x_test_NN_scaled = x_test_NN_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
-y_hat_test = model.predict(x_test_NN_scaled[train_cols_NN])
-label, rmse, variance = evaluate(y_test, y_hat_test)
-NN_test = ["NN (pre-tuned)", label, rmse, variance]
-list_results.append(NN_test)
+nn_x_test_scaled = nn_x_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
+y_hat_test = model.predict(nn_x_test_scaled[train_cols_NN])
+result = evaluate("NN (pre-tuned)", y_test[0], y_hat_test.flatten(), x_test_org.groupby('unit num').last()['breakdown'],
+                  'test')
+list_results.append(result)
 
 # hyperparameter tuning
 tune = False
@@ -463,7 +469,7 @@ if tune:
     activation_functions = ['tanh', 'sigmoid']
     batch_size_list = [32, 64, 128, 256, 512]
 
-    ITERATIONS = 100
+    ITERATIONS = 10
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -489,23 +495,23 @@ if tune:
         batch_size = random.sample(batch_size_list, 1)[0]
 
         # create dataset
-        df_train, train_label, _, idx = prep_data(df_train=train_org.drop(drop_sensors, axis=1),
-                                                  train_label=train_org['RUL'],
-                                                  df_test=x_test_org.drop(drop_sensors, axis=1),
-                                                  remaining_sensors=remaining_sensors,
-                                                  lags=specific_lags,
-                                                  alpha=alpha)
+        nn_x_train, nn_y_train, _, idx, _ = prep_data(x_train=train_org,
+                                                      y_train=train_org['RUL'],
+                                                      x_test=x_test_org,
+                                                      remaining_sensors=remaining_sensors,
+                                                      lags=specific_lags,
+                                                      alpha=alpha)
         # create model
-        input_dim = len(df_train.columns)
+        input_dim = len(nn_x_train.columns)
         model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
 
         # create train-validation split
         gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
-        for idx_train, idx_val in gss_search.split(df_train, train_label, groups=train_org.iloc[idx]['unit num']):
-            X_train_split = df_train.iloc[idx_train].copy()
-            y_train_split = train_label.iloc[idx_train].copy()
-            X_val_split = df_train.iloc[idx_val].copy()
-            y_val_split = train_label.iloc[idx_val].copy()
+        for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train, groups=train_org.iloc[idx]['unit num']):
+            X_train_split = nn_x_train.iloc[idx_train].copy()
+            y_train_split = nn_y_train.iloc[idx_train].copy()
+            X_val_split = nn_x_train.iloc[idx_val].copy()
+            y_val_split = nn_y_train.iloc[idx_val].copy()
 
             # train and evaluate model
             model.compile(loss='mean_squared_error', optimizer='adam')
@@ -521,52 +527,49 @@ if tune:
              'activation': activation, 'batch_size': batch_size}
         results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
 
-    results.to_csv("hyp_results", index=False)
+    results.to_csv("hyp_results.csv", index=False)
 
-alpha = 0.4
-epochs = 30
+alpha = 0.3
+epochs = 25
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
 nodes = [128, 256, 512]
-dropout = 0.4
-activation = 'sigmoid'
-batch_size = 64
+dropout = 0.1
+activation = 'tanh'
+batch_size = 32
 
-df_train, train_label, df_test, _ = prep_data(df_train=train_org.drop(drop_sensors, axis=1),
-                                              train_label=train_org['RUL'],
-                                              df_test=x_test_org.drop(drop_sensors, axis=1),
-                                              remaining_sensors=remaining_sensors,
-                                              lags=specific_lags,
-                                              alpha=alpha)
-
+nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org,
+                                                               y_train=train_org['RUL'],
+                                                               x_test=x_test_org,
+                                                               remaining_sensors=remaining_sensors,
+                                                               lags=specific_lags,
+                                                               alpha=alpha)
 train = False
 filename = 'finalized_tuned_NN_model.h5'
 if train:
-    input_dim = len(df_train.columns)
+    input_dim = len(nn_x_train.columns)
     weights_file = 'mlp_hyper_parameter_weights'
-    final_model = create_model(input_dim,
-                               nodes_per_layer=nodes,
-                               dropout=dropout,
-                               activation=activation,
-                               weights_file=weights_file)
+    nn_lagged_tuned = create_model(input_dim,
+                                   nodes_per_layer=nodes,
+                                   dropout=dropout,
+                                   activation=activation,
+                                   weights_file=weights_file)
 
-    final_model.compile(loss='mean_squared_error', optimizer='adam')
-    final_model.load_weights(weights_file)
-
-    final_model.fit(df_train, train_label, epochs=epochs, batch_size=batch_size, verbose=0)
-    final_model.save(filename)  # save trained model
+    nn_lagged_tuned.compile(loss='mean_squared_error', optimizer='adam')
+    nn_lagged_tuned.load_weights(weights_file)
+    nn_lagged_tuned.fit(nn_x_train, nn_y_train, epochs=epochs, batch_size=batch_size, verbose=0)
+    nn_lagged_tuned.save(filename)  # save trained model
 
 # predict and evaluate
-final_model = load_model(filename)
+nn_lagged_tuned = load_model(filename)
 print("tuned Neural Network")
-y_hat_train = final_model.predict(df_train)
-label, rmse, variance = evaluate(train_label, y_hat_train, 'train')
-NN_train = ["NN (tuned)", label, rmse, variance]
-list_results.append(NN_train)
+y_hat_val = nn_lagged_tuned.predict(nn_x_train)
+result = evaluate("NN (lagged+tuned)", nn_y_train, y_hat_val.flatten(), df_breakdown, 'train')
+list_results.append(result)
 
-y_hat_test = final_model.predict(df_test)
-label, rmse, variance = evaluate(y_test, y_hat_test)
-NN_test = ["NN (tuned)", label, rmse, variance]
-list_results.append(NN_test)
+y_hat_test = nn_lagged_tuned.predict(nn_x_test)
+result = evaluate("NN (lagged+tuned)", y_test[0], y_hat_test.flatten(),
+                  x_test_org.groupby('unit num').last()['breakdown'], 'test')
+list_results.append(result)
 
 ################################
 #   Random Survival Forest
@@ -575,6 +578,7 @@ list_results.append(NN_test)
 print(delimiter)
 print("Started Random Survival Forest")
 
+# Data preparation
 # rsf_x = train_censored.copy()  # this is clipped at 200
 rsf_x = train_clipped_dropped.copy()  # this is not clipped
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
@@ -590,29 +594,13 @@ rsf_x_val_dropped = rsf_x_val.drop(attribute_dropped, axis=1)
 rsf_y_train_dropped = rsf_y_train.drop('RUL', axis=1)
 rsf_y_val_dropped = rsf_y_val.drop('RUL', axis=1)
 
-# Training RSF
-random_state = 20
-train = False
-filename = 'finalized_rsf_model.sav'
-if train:
-    rsf = RandomSurvivalForest(n_estimators=1000,
-                               min_samples_split=10,
-                               min_samples_leaf=15,
-                               max_features="sqrt",
-                               n_jobs=-1,
-                               random_state=random_state)
-    print("Fitting rsf")
-    rsf.fit(rsf_x_train_dropped,
-            Surv.from_dataframe('breakdown', 'cycle', rsf_y_train_dropped))  # y only takes structured data
-    pickle.dump(rsf, open(filename, 'wb'))  # save trained model
-
+# Predicting RSF
 print("Predicting rsf")
-rsf = pickle.load(open(filename, 'rb'))
-print('The score is ', rsf.score(rsf_x_val_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_val_dropped)))
+rsf_filename = 'finalized_rsf_model.sav'
+rsf = pickle.load(open(rsf_filename, 'rb'))
 
 # Estimate remaining useful life
-surv = rsf.predict_survival_function(rsf_x_val_dropped,
-                                     return_array=True)  # return the survival function for each data point
+surv = rsf.predict_survival_function(rsf_x_val_dropped, return_array=True)  # return S(t) for each data point
 rsf_rmst = []  # create a list to store the rmst of each survival curve
 
 for i, s in enumerate(surv):
@@ -631,9 +619,15 @@ for i, s in enumerate(surv):
 # plt.show()
 
 rsf_RUL = rsf_rmst - rsf_x_val['cycle']
-label, rmse, variance = evaluate(rsf_y_val['RUL'], rsf_RUL, "Train")
-rsf_train = ["rsf (pre-tuned)", label, rmse, variance]
-list_results.append(rsf_train)
+print('The C-index (scikit-survival) is ', ci_scikit(rsf_y_val_dropped['breakdown'], rsf_y_val['RUL'], rsf_RUL)[0])
+print('The C-index (worse being nearer to 1) is ',
+      rsf.score(rsf_x_val_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_val_dropped)))
+
+result = evaluate("rsf (pre-tuned)", rsf_y_val['RUL'], rsf_RUL, rsf_y_val_dropped['breakdown'], "Train")
+list_results.append(result)
+# rsf_y_val["predicted"] = rsf_RUL
+# print(rsf_y_val[['RUL', 'predicted']])
+
 
 ################################
 #   Save results of each model
@@ -641,8 +635,11 @@ list_results.append(rsf_train)
 
 print(delimiter)
 print("Saving all results")
-now = datetime.now()
+now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 df_results = pd.DataFrame(list_results, columns=results_header)
-df_results["timestamp"] = now.strftime("%d/%m/%Y %H:%M:%S")
-print(df_results)
-df_results.to_csv("saved_results.csv")
+df_results["timestamp"] = now
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+    print(df_results)
+full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
+filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
+df_results.to_csv(filename)
