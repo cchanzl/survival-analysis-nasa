@@ -2,6 +2,10 @@ import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
 
+from datetime import datetime  # to timestamp results of each model
+
+now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
 import pandas as pd
 import numpy as np
 import random
@@ -21,7 +25,6 @@ from keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 import pickle
 from sksurv.metrics import concordance_index_censored as ci_scikit
-from datetime import datetime  # to timestamp results of each model
 
 ##########################
 #   Loading Data
@@ -40,7 +43,8 @@ df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=h
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
 # create df to append result of each model
-results_header = ["model_name", "train_test", "RMSE", "CI_SK", "R2"]
+evaluation_metrics = ["RMSE", "CI_SK", "R2"]
+results_header = ["model_name", "train_test"] + evaluation_metrics
 list_results = []
 
 
@@ -235,8 +239,7 @@ train_censored = train_clipped_dropped[train_clipped_dropped['cycle'] <= cut_off
 # prep test set
 x_test_org.drop(labels=drop_labels, axis=1, inplace=True)
 x_test_org['breakdown'] = 0
-idx_last_record = x_test_org.reset_index().groupby(by='unit num')[
-    'index'].last()  # engines breakdown at the last cycle
+idx_last_record = x_test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
 x_test_org.at[idx_last_record, 'breakdown'] = 1
 x_test_org['start'] = x_test_org['cycle'] - 1
 y_test.drop(y_test.columns[1], axis=1, inplace=True)
@@ -426,7 +429,7 @@ train_cols_NN = remaining_sensors  # select columns used for trg in NN. Only use
 input_dim = len(train_cols_NN)
 
 # training the model
-train = False
+train = True
 filename = 'finalized_pretuned_NN_model.h5'
 if train:
     # construct neural network
@@ -458,18 +461,18 @@ list_results.append(result)
 # hyperparameter tuning
 tune = False
 if tune:
-    alpha_list = [0.01, 0.05] + list(np.arange(10, 60 + 1, 10) / 100)
-    epoch_list = list(np.arange(10, 30 + 1, 5))
-    nodes_list = [[16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
+    alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
+    epoch_list = list(np.arange(10, 50 + 1, 5))
+    nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
 
     # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
-    dropouts = list(np.arange(1, 5) / 10)
+    dropouts = list(np.arange(0, 4 + 1, 0.5) / 10)
 
     # earlier testing revealed relu performed significantly worse, so I removed it from the options
     activation_functions = ['tanh', 'sigmoid']
-    batch_size_list = [32, 64, 128, 256, 512]
+    batch_size_list = [16, 32, 64, 128, 256, 512]
 
-    ITERATIONS = 10
+    ITERATIONS = 1000
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -479,11 +482,7 @@ if tune:
     specific_lags = [1, 2, 3, 4, 5, 10, 20]
 
     for i in range(ITERATIONS):
-        if i < 10:
-            print("Iteration ", str(i + 1))
-        elif ((i + 1) % 10 == 0):
-            print("Iteration ", str(i + 1))
-
+        print("Iteration ", str(i + 1))
         mse = []
 
         # init parameters
@@ -527,15 +526,15 @@ if tune:
              'activation': activation, 'batch_size': batch_size}
         results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
 
-    results.to_csv("hyp_results.csv", index=False)
+    results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
 
-alpha = 0.3
-epochs = 25
+alpha = 0.05
+epochs = 30
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
-nodes = [128, 256, 512]
-dropout = 0.1
+nodes = [64, 128, 256]
+dropout = 0.2
 activation = 'tanh'
-batch_size = 32
+batch_size = 64
 
 nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org,
                                                                y_train=train_org['RUL'],
@@ -623,7 +622,7 @@ print('The C-index (scikit-survival) is ', ci_scikit(rsf_y_val_dropped['breakdow
 print('The C-index (worse being nearer to 1) is ',
       rsf.score(rsf_x_val_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_val_dropped)))
 
-result = evaluate("rsf (pre-tuned)", rsf_y_val['RUL'], rsf_RUL, rsf_y_val_dropped['breakdown'], "Train")
+result = evaluate("rsf (pre-tuned)", rsf_y_val['RUL'], rsf_RUL, rsf_y_val_dropped['breakdown'], "train")
 list_results.append(result)
 # rsf_y_val["predicted"] = rsf_RUL
 # print(rsf_y_val[['RUL', 'predicted']])
@@ -635,11 +634,21 @@ list_results.append(result)
 
 print(delimiter)
 print("Saving all results")
-now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 df_results = pd.DataFrame(list_results, columns=results_header)
 df_results["timestamp"] = now
-with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+
+# format numbers
+for col in evaluation_metrics:
+    df_results[col] = pd.Series(["{0:.4f}".format(val) for val in df_results[col]], index=df_results.index)
+
+# sort values
+df_results.sort_values(by=['train_test', 'RMSE'], ascending=[True, True], inplace=True)
+
+# print to console and save
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):
     print(df_results)
-full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
-filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
-df_results.to_csv(filename)
+
+    # save file
+    full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
+    filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
+    df_results.to_csv(filename, index=False)
