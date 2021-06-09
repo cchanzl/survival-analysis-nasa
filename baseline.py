@@ -429,7 +429,7 @@ train_cols_NN = remaining_sensors  # select columns used for trg in NN. Only use
 input_dim = len(train_cols_NN)
 
 # training the model
-train = True
+train = False
 filename = 'finalized_pretuned_NN_model.h5'
 if train:
     # construct neural network
@@ -472,7 +472,7 @@ if tune:
     activation_functions = ['tanh', 'sigmoid']
     batch_size_list = [16, 32, 64, 128, 256, 512]
 
-    ITERATIONS = 1000
+    ITERATIONS = 500
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -542,7 +542,7 @@ nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org
                                                                remaining_sensors=remaining_sensors,
                                                                lags=specific_lags,
                                                                alpha=alpha)
-train = False
+train = True
 filename = 'finalized_tuned_NN_model.h5'
 if train:
     input_dim = len(nn_x_train.columns)
@@ -587,46 +587,58 @@ rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or fal
 rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 
 rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25)
-attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
-rsf_x_train_dropped = rsf_x_train.drop(attribute_dropped, axis=1)
-rsf_x_val_dropped = rsf_x_val.drop(attribute_dropped, axis=1)
-rsf_y_train_dropped = rsf_y_train.drop('RUL', axis=1)
-rsf_y_val_dropped = rsf_y_val.drop('RUL', axis=1)
 
 # Predicting RSF
 print("Predicting rsf")
 rsf_filename = 'finalized_rsf_model.sav'
 rsf = pickle.load(open(rsf_filename, 'rb'))
 
+
 # Estimate remaining useful life
-surv = rsf.predict_survival_function(rsf_x_val_dropped, return_array=True)  # return S(t) for each data point
-rsf_rmst = []  # create a list to store the rmst of each survival curve
+def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
+    attribute_dropped = ['cycle', 'breakdown', 'start']  # there is no 'RUL' and 'unit num' for x_test
+    if label != 'test':
+        attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
+    rsf_y_dropped = rsf_y.drop('RUL', axis=1)
+    rsf_x_dropped = rsf_x.drop(attribute_dropped, axis=1)
+    print(list(rsf_x_dropped.columns.values))
+    print(list(rsf_y_dropped.columns.values))
+    surv = rsf.predict_survival_function(rsf_x_dropped, return_array=True)  # return S(t) for each data point
 
-for i, s in enumerate(surv):
-    # plt.step(rsf.event_times_, s, where="post", label=str(i))
+    rsf_rmst = []  # create a list to store the rmst of each survival curve
 
-    # calculate rmst
-    df_s = pd.DataFrame(s)
-    df_s.set_index(rsf.event_times_, inplace=True)
-    km_rmst = restricted_mean_survival_time(df_s, t=cut_off)  # calculate restricted mean survival time
-    rsf_rmst.append(km_rmst)
+    for i, s in enumerate(surv):
+        # plt.step(rsf.event_times_, s, where="post", label=str(i))
 
-# plt.ylabel("Survival probability")
-# plt.xlabel("Time in cycles")
-# plt.legend()
-# plt.grid(True)
-# plt.show()
+        # calculate rmst
+        df_s = pd.DataFrame(s)
+        df_s.set_index(rsf.event_times_, inplace=True)
+        km_rmst = restricted_mean_survival_time(df_s, t=cut_off)  # calculate restricted mean survival time
+        rsf_rmst.append(km_rmst)
 
-rsf_RUL = rsf_rmst - rsf_x_val['cycle']
-print('The C-index (scikit-survival) is ', ci_scikit(rsf_y_val_dropped['breakdown'], rsf_y_val['RUL'], rsf_RUL)[0])
-print('The C-index (worse being nearer to 1) is ',
-      rsf.score(rsf_x_val_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_val_dropped)))
+    # plt.ylabel("Survival probability")
+    # plt.xlabel("Time in cycles")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.show()
 
-result = evaluate("rsf (pre-tuned)", rsf_y_val['RUL'], rsf_RUL, rsf_y_val_dropped['breakdown'], "train")
+    rsf_RUL = rsf_rmst - rsf_x['cycle']
+    #print('The C-index (scikit-survival) is ', ci_scikit(rsf_y['breakdown'], rsf_y['RUL'], rsf_RUL)[0])
+    #print('The C-index (worse being nearer to 1) is ',
+    #      rsf.score(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped)))
+
+    result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
+    return result_interim
+
+
+result = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
 list_results.append(result)
-# rsf_y_val["predicted"] = rsf_RUL
-# print(rsf_y_val[['RUL', 'predicted']])
 
+y_test['breakdown'] = x_test_org['breakdown']
+y_test['cycle'] = x_test_org['cycle']
+y_test.rename(columns={0: 'RUL'}, inplace=True)
+result = evaluate_rsf("rsf (pre-tuned)", rsf, x_test_org.groupby('unit num').last(), y_test, 'test')
+list_results.append(result)
 
 ################################
 #   Save results of each model
