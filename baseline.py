@@ -184,14 +184,13 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
     X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
 
     X_train_breakdown = X_train_interim['breakdown']
-    X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown'], axis=1, inplace=True)
-    X_test_interim = X_test_interim.groupby('unit num').last().copy()
-    X_test_interim.drop(['cycle', 'breakdown', 'start'], axis=1, inplace=True)
+    X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
+    X_test_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
 
-    idx = X_train_interim.index
-    y_train = y_train.iloc[idx]
+    train_idx = X_train_interim.index
+    y_train = y_train.iloc[train_idx]
 
-    return X_train_interim, y_train, X_test_interim, idx, X_train_breakdown
+    return X_train_interim, y_train, X_test_interim, train_idx, X_train_breakdown
 
 
 ################################
@@ -201,7 +200,7 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
 print(delimiter)
 print("Started data preprocessing")
 
-# Based on MannKendall, sensor 2, 3, 4, 7, 8, 11, 12, 13, 15, 17, 20 and 21 are selected
+# Sensors selected based on MannKendall, sensor 2, 3, 4, 7, 8, 11, 12, 13, 15, 17, 20 and 21 are selected
 drop_sensors = ['sens1', 'sens5', 'sens6', 'sens9', 'sens10', 'sens14',
                 'sens16', 'sens18', 'sens19', 'sens22', 'sens23', 'sens24', 'sens25', 'sens26']
 
@@ -214,35 +213,45 @@ all_sensors = drop_sensors + remaining_sensors
 
 # add RUL column
 train_org = add_remaining_useful_life(df_train_001)
+test_org = x_test_org.copy()
+y_test.rename(columns={0: 'RUL'}, inplace=True)
+y_test['unit num'] = [i for i in range(1, 101)]
+y_test['max_cycle'] = y_test['RUL'] + test_org.groupby('unit num').last().reset_index(drop=True)['cycle']
+test_org = pd.merge(test_org, y_test, on='unit num', how='left')
+test_org['RUL'] = test_org['max_cycle'] - test_org['cycle']
+# with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+#    print(test_org[['unit num', 'cycle', 'RUL', 'max_cycle']])
+test_org.drop(['max_cycle'], axis=1, inplace=True)
 
-# drop irrelevant sensors
-train_org.drop(drop_labels, axis=1, inplace=True)
+# drop non-informative sensors and operational settings
+train_org.drop(labels=drop_labels, axis=1, inplace=True)
+test_org.drop(labels=drop_labels, axis=1, inplace=True)
+test_org.drop([1], axis=1, inplace=True)
 
-# add event indicator column
+# add event indicator 'breakdown' column
 train_org['breakdown'] = 0
-idx_last_record = train_org.reset_index().groupby(by='unit num')[
-    'index'].last()  # engines breakdown at the last cycle
+idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
 train_org.at[idx_last_record, 'breakdown'] = 1
+test_org['breakdown'] = 0
+idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+test_org.at[idx_last_record, 'breakdown'] = 1
+
+# Add start cycle column (only required for Cox model)
+train_org['start'] = train_org['cycle'] - 1
+test_org['start'] = test_org['cycle'] - 1
 
 # apply a floor to RUL. 125 is selected as the min cycle is 128. See EDA.
 train_clipped = train_org.copy()
-train_clipped['RUL'].clip(upper=125, inplace=True)
-train_clipped_dropped = train_clipped.copy()
-
-# Add start cycle column
-train_clipped_dropped['start'] = train_clipped_dropped['cycle'] - 1
+train_clipped['RUL'] = train_clipped['RUL'].clip(upper=125)
+test_clipped = test_org.copy()
+test_clipped['RUL'] = test_clipped['RUL'].clip(upper=125)
 
 # Apply cut-off
 cut_off = 200  # Important to improve accuracy
-train_censored = train_clipped_dropped[train_clipped_dropped['cycle'] <= cut_off].copy()
-
-# prep test set
-x_test_org.drop(labels=drop_labels, axis=1, inplace=True)
-x_test_org['breakdown'] = 0
-idx_last_record = x_test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-x_test_org.at[idx_last_record, 'breakdown'] = 1
-x_test_org['start'] = x_test_org['cycle'] - 1
-y_test.drop(y_test.columns[1], axis=1, inplace=True)
+train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
+test_clipped = test_clipped[test_clipped['cycle'] <= cut_off].copy()
+# with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+#     print(train_clipped[['unit num', 'cycle', 'RUL']])
 
 # Initilise columns used for training and prediction
 train_cols = ['unit num', 'cycle'] + remaining_sensors + ['start', 'breakdown']
@@ -255,11 +264,11 @@ predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdo
 print(delimiter)
 print("Started Kaplan-Meier")
 
-data = train_censored[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
+km_train = train_clipped[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
 
 plt.figure(figsize=(15, 7))
 kaplanMeier = KaplanMeierFitter()
-kaplanMeier.fit(data['cycle'], data['breakdown'])
+kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 
 # kaplanMeier.plot()
 # plt.ylabel("Probability of survival")
@@ -268,14 +277,14 @@ kaplanMeier.fit(data['cycle'], data['breakdown'])
 
 # estimate restricted mean survival time from KM curve
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=cut_off)
-data['km_rmst'] = km_rmst
+km_train['km_rmst'] = km_rmst
 
-result = evaluate("KM_rmst", data['RUL'], data['km_rmst'], data['breakdown'], 'train')
+result = evaluate("KM_rmst", km_train['RUL'], km_train['km_rmst'], km_train['breakdown'], 'train')
 list_results.append(result)
 
-km_rmst_arr = [km_rmst for x in range(len(y_test))]
-y_hat = km_rmst_arr - x_test_org.groupby('unit num').last()['cycle']
-result = evaluate("KM_rmst", y_test[0], y_hat, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
+y_hat = km_rmst_arr - test_clipped['cycle']
+result = evaluate("KM_rmst", test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
 
 ################################
@@ -287,7 +296,7 @@ print("Started Cox PH")
 
 # Train Cox model
 ctv = CoxTimeVaryingFitter()
-ctv.fit(train_censored[train_cols], id_col="unit num", event_col='breakdown',
+ctv.fit(train_clipped[train_cols], id_col="unit num", event_col='breakdown',
         start_col='start', stop_col='cycle', show_progress=True, step_size=1)
 # ctv.print_summary()
 # plt.figure(figsize=(10, 5))
@@ -295,7 +304,7 @@ ctv.fit(train_censored[train_cols], id_col="unit num", event_col='breakdown',
 # plt.show()
 
 # get engines from dataset which are still functioning but right censored to predict their RUL
-df = train_censored.groupby("unit num").last()  # get the last entry of each engine unit
+df = train_clipped.groupby("unit num").last()  # get the last entry of each engine unit
 train_log_ph = df[df['breakdown'] == 0].copy()
 train_log_ph.reset_index(inplace=True)
 
@@ -317,7 +326,7 @@ predictions['RUL'] = train_log_ph['RUL']
 
 # Plot log_partial_hazard against RUL to see trend
 train_log_ph.set_index('unit num', inplace=True)
-X = train_clipped_dropped.loc[train_clipped_dropped['unit num'].isin(train_log_ph.index)]
+X = train_clipped.loc[train_clipped['unit num'].isin(train_log_ph.index)]
 X_unique = len(X['unit num'].unique())
 
 # plt.figure(figsize=(15, 5))
@@ -333,7 +342,7 @@ X_unique = len(X['unit num'].unique())
 # plt.show()
 
 # Calculate log_partial_hazard for all data points
-train_cox = train_censored.copy()
+train_cox = train_clipped.copy()  # need to make a copy so that we can add 'hazard' later
 predictions = ctv.predict_log_partial_hazard(train_cox)
 train_cox['hazard'] = predictions.to_frame()[0].values
 
@@ -352,9 +361,9 @@ print("fitted exponential curve")
 result = evaluate("Cox", train_cox['RUL'], y_hat, train_cox['breakdown'], 'train')
 list_results.append(result)
 
-y_pred = ctv.predict_log_partial_hazard(x_test_org.groupby('unit num').last().reset_index())
+y_pred = ctv.predict_log_partial_hazard(test_clipped)
 y_hat = exponential_model(y_pred, *popt)
-result = evaluate('Cox', y_test[0], y_hat, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+result = evaluate('Cox', test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
 
 ################################
@@ -367,19 +376,22 @@ print(delimiter)
 print("Started Random Forest")
 
 rf = RandomForestRegressor(n_estimators=100, criterion="mse", max_features="sqrt", random_state=42)
-x_train_rf = train_censored.copy()
-x_train_rf = x_train_rf.drop('cycle', axis=1)
-y_train_rf = x_train_rf.pop('RUL')
-rf.fit(x_train_rf, y_train_rf)
+rf_x = train_clipped.copy()
+rf_y = rf_x.pop('RUL')
+rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25)
+rf_x_train_dropped = rf_x_train.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
+rf_x_val_dropped = rf_x_val.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
+rf.fit(rf_x_train_dropped, rf_y_train)
 
 # predict and evaluate, without any hyperparameter tuning
-y_hat_val = rf.predict(x_train_rf)
+y_hat_val = rf.predict(rf_x_val_dropped)
 print("pre-tuned RF")
-result = evaluate('RF (pre-tuned)', y_train_rf, y_hat_val, x_train_rf['breakdown'], 'train')
+result = evaluate('RF (pre-tuned)', rf_y_val, y_hat_val, rf_x_val['breakdown'], 'train')
 list_results.append(result)
 
-y_hat_test = rf.predict(x_test_org.groupby('unit num').last())
-result = evaluate("RF (pre-tuned)", y_test[0], y_hat_test, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+x_test_clipped_dropped = test_clipped.drop(['cycle', 'unit num', 'breakdown', 'start', 'RUL'], axis=1)
+y_hat_test = rf.predict(x_test_clipped_dropped)
+result = evaluate("RF (pre-tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
 list_results.append(result)
 
 # perform some checks on layout of a SINGLE tree
@@ -389,16 +401,16 @@ list_results.append(result)
 # crudely tweaked random forest
 rf = RandomForestRegressor(n_estimators=100, max_features="sqrt", random_state=42,
                            max_depth=8, min_samples_leaf=50)
-rf.fit(x_train_rf, y_train_rf)
+rf.fit(rf_x_train_dropped, rf_y_train)
 
 # predict and evaluate
-y_hat_val = rf.predict(x_train_rf)
+y_hat_val = rf.predict(rf_x_val_dropped)
 print("crudely tuned RF")
-result = evaluate('RF (tuned)', y_train_rf, y_hat_val, x_train_rf['breakdown'], 'train')
+result = evaluate('RF (tuned)', rf_y_val, y_hat_val, rf_x_val['breakdown'], 'train')
 list_results.append(result)
 
-y_hat_test = rf.predict(x_test_org.groupby('unit num').last())
-result = evaluate("RF (tuned)", y_test[0], y_hat_test, x_test_org.groupby('unit num').last()['breakdown'], 'test')
+y_hat_test = rf.predict(x_test_clipped_dropped)
+result = evaluate("RF (tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
 # to_compare = y_test.copy()
 # to_compare["pred"] = y_hat_test.tolist()
 # print(to_compare)
@@ -412,21 +424,19 @@ list_results.append(result)
 
 print(delimiter)
 print("Started Neural Network")
-# copy original full dataset
-train_NN = train_org.copy()
+# make a copy of the original full dataset as we need to scale it for NN
+train_NN = train_org.copy()  # why cannot use clipped data?
 
 # scaling using minmax
 nn_y_train = train_NN.pop('RUL')
-nn_x_train_scaled, nn_x_test_scaled = minmax_scaler(train_NN, x_test_org, remaining_sensors)
+nn_x_train_scaled, nn_x_test_scaled = minmax_scaler(train_NN, test_org, remaining_sensors)
 
 # split scaled dataset into train test split
 gss = GroupShuffleSplit(n_splits=1, train_size=0.80,
                         random_state=42)  # even though we set np and tf seeds, gss requires its own seed
-split_result = train_val_group_split(nn_x_train_scaled, nn_y_train, gss, nn_x_train_scaled['unit num'])
-nn_x_train_scaled, nn_y_train, nn_x_val, nn_y_val = split_result
-
-train_cols_NN = remaining_sensors  # select columns used for trg in NN. Only used for baseline NN model
-input_dim = len(train_cols_NN)
+nn_x_train_scaled, nn_y_train, nn_x_val_scaled, nn_y_val = train_val_group_split(nn_x_train_scaled,
+                                                                                 nn_y_train, gss,
+                                                                                 nn_x_train_scaled['unit num'])
 
 # training the model
 train = False
@@ -434,28 +444,27 @@ filename = 'finalized_pretuned_NN_model.h5'
 if train:
     # construct neural network
     model = Sequential()
-    model.add(Dense(16, input_dim=input_dim, activation='relu'))
+    model.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
     model.add(Dense(32, activation='relu'))
     model.add(Dense(64, activation='relu'))
     model.add(Dense(1))
     model.compile(loss='mean_squared_error', optimizer='adam')
 
     epochs = 20
-    history = model.fit(nn_x_train_scaled[train_cols_NN], nn_y_train,
-                        validation_data=(nn_x_val[train_cols_NN], nn_y_val),
+    history = model.fit(nn_x_train_scaled[remaining_sensors], nn_y_train,
+                        validation_data=(nn_x_val_scaled[remaining_sensors], nn_y_val),
                         epochs=epochs, verbose=0)
     model.save(filename)  # save trained model
 
 model = load_model(filename)
-y_hat_val = model.predict(nn_x_val[train_cols_NN])
+y_hat_val = model.predict(nn_x_val_scaled[remaining_sensors])
 print("pre-tuned Neural Network")
-result = evaluate("NN (pre-tuned)", nn_y_val, y_hat_val.flatten(), nn_x_val['breakdown'], 'train')
+result = evaluate("NN (pre-tuned)", nn_y_val, y_hat_val.flatten(), nn_x_val_scaled['breakdown'], 'train')
 list_results.append(result)
 
-nn_x_test_scaled = nn_x_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
-y_hat_test = model.predict(nn_x_test_scaled[train_cols_NN])
-result = evaluate("NN (pre-tuned)", y_test[0], y_hat_test.flatten(), x_test_org.groupby('unit num').last()['breakdown'],
-                  'test')
+# nn_x_test_scaled = nn_x_test_scaled.drop(['cycle', 'RUL', 'start'], axis=1)
+y_hat_test = model.predict(nn_x_test_scaled[remaining_sensors])
+result = evaluate("NN (pre-tuned)", test_org['RUL'], y_hat_test.flatten(), test_org['breakdown'], 'test')
 list_results.append(result)
 
 # hyperparameter tuning
@@ -472,7 +481,7 @@ if tune:
     activation_functions = ['tanh', 'sigmoid']
     batch_size_list = [16, 32, 64, 128, 256, 512]
 
-    ITERATIONS = 500
+    ITERATIONS = 10
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -496,7 +505,7 @@ if tune:
         # create dataset
         nn_x_train, nn_y_train, _, idx, _ = prep_data(x_train=train_org,
                                                       y_train=train_org['RUL'],
-                                                      x_test=x_test_org,
+                                                      x_test=test_org,
                                                       remaining_sensors=remaining_sensors,
                                                       lags=specific_lags,
                                                       alpha=alpha)
@@ -538,11 +547,11 @@ batch_size = 64
 
 nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org,
                                                                y_train=train_org['RUL'],
-                                                               x_test=x_test_org,
+                                                               x_test=test_org,
                                                                remaining_sensors=remaining_sensors,
                                                                lags=specific_lags,
                                                                alpha=alpha)
-train = True
+train = False
 filename = 'finalized_tuned_NN_model.h5'
 if train:
     input_dim = len(nn_x_train.columns)
@@ -565,9 +574,10 @@ y_hat_val = nn_lagged_tuned.predict(nn_x_train)
 result = evaluate("NN (lagged+tuned)", nn_y_train, y_hat_val.flatten(), df_breakdown, 'train')
 list_results.append(result)
 
+test_idx = nn_x_test.index
 y_hat_test = nn_lagged_tuned.predict(nn_x_test)
-result = evaluate("NN (lagged+tuned)", y_test[0], y_hat_test.flatten(),
-                  x_test_org.groupby('unit num').last()['breakdown'], 'test')
+result = evaluate("NN (lagged+tuned)", test_org.iloc[test_idx]['RUL'], y_hat_test.flatten(),
+                  test_org.iloc[test_idx]['breakdown'], 'test')
 list_results.append(result)
 
 ################################
@@ -578,8 +588,7 @@ print(delimiter)
 print("Started Random Survival Forest")
 
 # Data preparation
-# rsf_x = train_censored.copy()  # this is clipped at 200
-rsf_x = train_clipped_dropped.copy()  # this is not clipped
+rsf_x = train_clipped.copy()
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
 
 rsf_y = rsf_x[['breakdown', 'cycle', 'RUL']]
@@ -596,13 +605,11 @@ rsf = pickle.load(open(rsf_filename, 'rb'))
 
 # Estimate remaining useful life
 def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
-    attribute_dropped = ['cycle', 'breakdown', 'start']  # there is no 'RUL' and 'unit num' for x_test
-    if label != 'test':
-        attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
-    rsf_y_dropped = rsf_y.drop('RUL', axis=1)
+    # attribute_dropped = ['cycle', 'breakdown', 'start']  # there is no 'RUL' and 'unit num' for x_test
+    # if label != 'test':
+    attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
     rsf_x_dropped = rsf_x.drop(attribute_dropped, axis=1)
-    print(list(rsf_x_dropped.columns.values))
-    print(list(rsf_y_dropped.columns.values))
+    rsf_y_dropped = rsf_y.drop('RUL', axis=1)
     surv = rsf.predict_survival_function(rsf_x_dropped, return_array=True)  # return S(t) for each data point
 
     rsf_rmst = []  # create a list to store the rmst of each survival curve
@@ -623,8 +630,8 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # plt.show()
 
     rsf_RUL = rsf_rmst - rsf_x['cycle']
-    #print('The C-index (scikit-survival) is ', ci_scikit(rsf_y['breakdown'], rsf_y['RUL'], rsf_RUL)[0])
-    #print('The C-index (worse being nearer to 1) is ',
+    # print('The C-index (scikit-survival) is ', ci_scikit(rsf_y['breakdown'], rsf_y['RUL'], rsf_RUL)[0])
+    # print('The C-index (worse being nearer to 1) is ',
     #      rsf.score(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped)))
 
     result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
@@ -634,10 +641,10 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
 result = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
 list_results.append(result)
 
-y_test['breakdown'] = x_test_org['breakdown']
-y_test['cycle'] = x_test_org['cycle']
-y_test.rename(columns={0: 'RUL'}, inplace=True)
-result = evaluate_rsf("rsf (pre-tuned)", rsf, x_test_org.groupby('unit num').last(), y_test, 'test')
+rsf_test_y = test_clipped[['breakdown', 'cycle', 'RUL']]
+rsf_test_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
+rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
+result = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, rsf_test_y, 'test')
 list_results.append(result)
 
 ################################
