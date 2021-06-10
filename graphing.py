@@ -15,7 +15,7 @@ graph_data = pd.read_csv('graphing.csv', delimiter=",")
 
 def make_graph(selected_unit_num):
     fig, axs = plt.subplots(int(len(selected_unit_num)/2), 2)
-    models = ['RUL', 'km_rmst', 'Cox', 'RF (pre-tuned)', 'RF (tuned)', 'rsf (pre-tuned)']
+    models = ['RUL', 'km_rmst', 'Cox', 'NN (pre-tuned)', 'RF (tuned)', 'rsf (pre-tuned)']
     i = -1
     for ax in axs.flatten():
         i += 1
@@ -28,4 +28,4 @@ def make_graph(selected_unit_num):
     plt.legend()
     plt.show()
 
-make_graph([5, 6, 20, 31, 38, 55, 78, 91])
+# make_graph([5, 6, 20, 31, 38, 55, 78, 91])

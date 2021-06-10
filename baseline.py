@@ -207,6 +207,9 @@ nn_hyperparameter_tune = False
 n_Iterations = 100
 train_tuned_NN = False
 
+# to re-train untuned rsf
+train_untuned_rsf = False
+
 # If graph should be displayed at the end
 show_graph = True
 
@@ -302,13 +305,13 @@ km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
 km_train['km_rmst'] = km_rmst
 km_rmst_arr = [km_rmst for x in range(len(km_train))]
 y_hat = km_rmst_arr - km_train['cycle']
-y_hat = y_hat.clip(upper=clip_level)
+# y_hat = y_hat.clip(upper=clip_level)
 result = evaluate("KM_rmst", km_train['RUL'], y_hat, km_train['breakdown'], 'train')
 list_results.append(result)
 
 km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
 y_hat = km_rmst_arr - test_clipped['cycle']
-y_hat = y_hat.clip(upper=clip_level)
+# y_hat = y_hat.clip(upper=clip_level)
 result = evaluate("KM_rmst", test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
 
@@ -453,6 +456,7 @@ list_results.append(result)
 y_hat_test = model.predict(nn_x_test_scaled[remaining_sensors])
 result = evaluate("NN (pre-tuned)", test_org['RUL'], y_hat_test.flatten(), test_org['breakdown'], 'test')
 list_results.append(result)
+graph_data['NN (pre-tuned)'] = y_hat_test
 
 # hyperparameter tuning
 if nn_hyperparameter_tune:
@@ -564,6 +568,7 @@ y_hat_test = nn_lagged_tuned.predict(nn_x_test)
 result = evaluate("NN (lagged+tuned)", test_org.iloc[test_idx]['RUL'], y_hat_test.flatten(),
                   test_org.iloc[test_idx]['breakdown'], 'test')
 list_results.append(result)
+# graph_data['NN (pre-tuned)'] = y_hat_test
 
 ################################
 #   Random Survival Forest
@@ -585,13 +590,13 @@ rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, 
 # Predicting RSF
 print("Predicting rsf")
 rsf_filename = 'finalized_rsf_model.sav'
+if train_untuned_rsf:
+    from randomsurvivalforest import train_rsf
+    train_rsf(rsf_x_train, rsf_y_train, rsf_filename)
 rsf = pickle.load(open(rsf_filename, 'rb'))
-
 
 # Estimate remaining useful life
 def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
-    # attribute_dropped = ['cycle', 'breakdown', 'start']  # there is no 'RUL' and 'unit num' for x_test
-    # if label != 'test':
     attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
     rsf_x_dropped = rsf_x.drop(attribute_dropped, axis=1)
     surv = rsf.predict_survival_function(rsf_x_dropped, return_array=True)  # return S(t) for each data point
@@ -614,11 +619,11 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # plt.show()
 
     rsf_RUL = rsf_rmst - rsf_x['cycle']
-    rsf_RUL = rsf_RUL.clip(upper=clip_level)
+    #rsf_RUL = rsf_RUL.clip(upper=clip_level)
     result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
     return result_interim, rsf_RUL
 
-
+print(list(rsf_x_val.columns.values))
 result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
 list_results.append(result)
 
@@ -658,6 +663,6 @@ graph_data.to_csv("graphing.csv", index=False)
 # show graph
 if show_graph:
     from graphing import make_graph
-    make_graph([5, 6, 20, 31, 38, 55, 78, 91])
+    make_graph([31, 38, 78, 91, 5, 46, 55, 82])
 
 
