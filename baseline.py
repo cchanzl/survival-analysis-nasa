@@ -65,17 +65,39 @@ def add_remaining_useful_life(df):
     return result_frame
 
 
-def evaluate(model, y_true, y_hat, breakdown, label='test'):
-    breakdown.replace(0, False, inplace=True)  # rsf only takes true or false
-    breakdown.replace(1, True, inplace=True)  # rsf only takes true or false
+def evaluate(model, df_result, label='test'):
+    """ Evaluates model output on rmse, R2 and C-Index
+    Args:
+    model (string): name of model for documentation
+    df_result (pandas.df): dataframe with the headers 'unit num', 'RUL', 'y_hat', 'breakdown'
+    label (string): type of output (train or test)
+
+    Returns:
+    list: returns [model, label, rmse, ci_sk, variance]
+    """
+
+    y_true = df_result['RUL']
+    y_hat = df_result['y_hat']
+
+    df_result['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
+    df_result['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 
     mse = mean_squared_error(y_true, y_hat)
     rmse = np.sqrt(mse)
     variance = r2_score(y_true, y_hat)
 
-    # the concordance index is interested on the order of the predictions, not the predictions themselves
+    # the concordance index (CI) is interested on the order of the predictions, not the predictions themselves
+    # CI can only be measured between individual samples where a censoring or failure event occurred
     # https://medium.com/analytics-vidhya/concordance-index-72298c11eac7#:~:text=The%20concordance%20index%20or%20c,this%20definition%20mean%20in%20practice
-    ci_sk = ci_scikit(breakdown.to_numpy(), y_true, y_hat)[0]
+    df_result_grouped = df_result.groupby('unit num').last()
+    breakdown = df_result_grouped['breakdown']
+    y_true = df_result_grouped['RUL']
+    y_hat = df_result_grouped['y_hat']
+    ci_sk = ci_scikit(breakdown, y_true, y_hat)[0]
+    # print(f'Number of concordant pairs (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[1]}')
+    # print(f'Number of discordant pairs (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[2]}')
+    # print(f'Number of pairs having tied estimated risks (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[3]}')
+    # print(f'Number of comparable pairs sharing the same time (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[4]}')
 
     print('{} set RMSE:{:.2f}, CI(scikit):{:.4f}, R2:{:.2f}'.format(label, rmse, ci_sk, variance))
     result = [model, label, rmse, ci_sk, variance]
@@ -175,14 +197,14 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
     X_train_interim = add_specific_lags(X_train_interim, lags, remaining_sensors)
     X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
 
-    X_train_breakdown = X_train_interim['breakdown']
-    X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
-    X_test_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
+    # X_train_breakdown = X_train_interim['breakdown']
+    # X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
+    # X_test_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
 
     train_idx = X_train_interim.index
     y_train = y_train.iloc[train_idx]
 
-    return X_train_interim, y_train, X_test_interim, train_idx, X_train_breakdown
+    return X_train_interim, y_train, X_test_interim, train_idx
 
 
 ################################
@@ -309,18 +331,20 @@ kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
 km_train['km_rmst'] = km_rmst
 km_rmst_arr = [km_rmst for x in range(len(km_train))]
-y_hat = km_rmst_arr - km_train['cycle']
+km_train['y_hat'] = km_rmst_arr - km_train['cycle']
 # y_hat = y_hat.clip(upper=clip_level)
-result = evaluate("KM_rmst", km_train['RUL'], y_hat, km_train['breakdown'], 'train')
+result = evaluate("KM_rmst", km_train, 'train')
 list_results.append(result)
 
 km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
-y_hat = km_rmst_arr - test_clipped['cycle']
+df_result = test_clipped.copy()
+df_result['y_hat'] = km_rmst_arr - df_result['cycle']
 # y_hat = y_hat.clip(upper=clip_level)
-result = evaluate("KM_rmst", test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
+result = evaluate("KM_rmst", df_result, 'test')
 list_results.append(result)
+df_result.to_csv("km_test_ci.csv", index=False)
 
-graph_data['km_rmst'] = y_hat
+graph_data['km_rmst'] = df_result['y_hat']
 
 ################################
 #   Cox-PH Model
@@ -349,16 +373,17 @@ train_cox['hazard'] = predictions.to_frame()[0].values
 popt, pcov = curve_fit(exponential_model, train_cox['hazard'], train_cox['RUL'])
 
 # perform prediction solely on log-partial hazard and evaluate
-y_hat = exponential_model(train_cox['hazard'], *popt)
+train_cox['y_hat'] = exponential_model(train_cox['hazard'], *popt)
 print("fitted exponential curve")
-result = evaluate("Cox", train_cox['RUL'], y_hat, train_cox['breakdown'], 'train')
+result = evaluate("Cox", train_cox, 'train')
 list_results.append(result)
 
 y_pred = ctv.predict_log_partial_hazard(test_clipped)
-y_hat = exponential_model(y_pred, *popt)
-result = evaluate('Cox', test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
+df_result = test_clipped.copy()
+df_result['y_hat'] = exponential_model(y_pred, *popt)
+result = evaluate('Cox', df_result, 'test')
 list_results.append(result)
-graph_data['Cox'] = y_hat
+graph_data['Cox'] = df_result['y_hat']
 
 ################################
 #   Random Forest
@@ -372,25 +397,28 @@ print("Started Random Forest")
 # data preparation
 rf_x = train_clipped.copy()
 rf_y = rf_x.pop('RUL')
-rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25)
-rf_x_train_dropped = rf_x_train.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
-rf_x_val_dropped = rf_x_val.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
+rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25, random_state=6)
+
+# split scaled dataset into train test split
+# gss = GroupShuffleSplit(n_splits=1, train_size=0.80, random_state=42)
+# rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_val_group_split(rf_x, rf_y, gss, rf_x['unit num'])
 
 # model fitting
 rf = RandomForestRegressor(n_estimators=100, criterion="mse", max_features="sqrt", random_state=42)
-rf.fit(rf_x_train_dropped, rf_y_train)
+rf.fit(rf_x_train[remaining_sensors], rf_y_train)
 
 # predict and evaluate, without any hyperparameter tuning
-y_hat_val = rf.predict(rf_x_val_dropped)
+rf_x_val['y_hat'] = rf.predict(rf_x_val[remaining_sensors])
+rf_x_val['RUL'] = rf_y_val
 print("pre-tuned RF")
-result = evaluate('RF (pre-tuned)', rf_y_val, y_hat_val, rf_x_val['breakdown'], 'train')
+result = evaluate('RF (pre-tuned)', rf_x_val, 'train')
 list_results.append(result)
 
-x_test_clipped_dropped = test_clipped.drop(['cycle', 'unit num', 'breakdown', 'start', 'RUL'], axis=1)
-y_hat_test = rf.predict(x_test_clipped_dropped)
-result = evaluate("RF (pre-tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
+df_result = test_clipped.copy()
+df_result['y_hat'] = rf.predict(test_clipped[remaining_sensors])
+result = evaluate("RF (pre-tuned)", df_result, 'test')
 list_results.append(result)
-graph_data['RF (pre-tuned)'] = y_hat_test
+graph_data['RF (pre-tuned)'] = df_result['y_hat']
 
 # perform some checks on layout of a SINGLE tree
 # print(rf.estimators_[5].tree_.max_depth)  # check how many nodes in the longest path
@@ -399,18 +427,18 @@ graph_data['RF (pre-tuned)'] = y_hat_test
 # crudely tweaked random forest
 rf = RandomForestRegressor(n_estimators=100, max_features="sqrt", random_state=42,
                            max_depth=8, min_samples_leaf=50)
-rf.fit(rf_x_train_dropped, rf_y_train)
+rf.fit(rf_x_train[remaining_sensors], rf_y_train)
 
 # predict and evaluate
-y_hat_val = rf.predict(rf_x_val_dropped)
+rf_x_val['y_hat'] = rf.predict(rf_x_val[remaining_sensors])
 print("crudely tuned RF")
-result = evaluate('RF (tuned)', rf_y_val, y_hat_val, rf_x_val['breakdown'], 'train')
+result = evaluate('RF (tuned)', rf_x_val, 'train')
 list_results.append(result)
 
-y_hat_test = rf.predict(x_test_clipped_dropped)
-result = evaluate("RF (tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
+df_result['y_hat'] = rf.predict(test_clipped[remaining_sensors])
+result = evaluate("RF (tuned)", df_result, 'test')
 list_results.append(result)
-graph_data['RF (tuned)'] = y_hat_test
+graph_data['RF (tuned)'] = df_result['y_hat']
 
 ################################
 #   Neural Network
@@ -452,16 +480,18 @@ if train_untuned_NN:
     model.save(filename)  # save trained model
 
 model = load_model(filename)
-y_hat_val = model.predict(nn_x_val_scaled[remaining_sensors])
+nn_x_val_scaled['y_hat'] = model.predict(nn_x_val_scaled[remaining_sensors])
+nn_x_val_scaled['RUL'] = nn_y_val
 print("pre-tuned Neural Network")
-result = evaluate("NN (pre-tuned)", nn_y_val, y_hat_val.flatten(), nn_x_val_scaled['breakdown'], 'train')
+result = evaluate("NN (pre-tuned)", nn_x_val_scaled, 'train')
 list_results.append(result)
 
 # nn_x_test_scaled = nn_x_test_scaled.drop(['cycle', 'RUL', 'start'], axis=1)
-y_hat_test = model.predict(nn_x_test_scaled[remaining_sensors])
-result = evaluate("NN (pre-tuned)", test_org['RUL'], y_hat_test.flatten(), test_org['breakdown'], 'test')
+df_result = test_clipped.copy()
+df_result['y_hat'] = model.predict(nn_x_test_scaled[remaining_sensors])
+result = evaluate("NN (pre-tuned)", df_result, 'test')
 list_results.append(result)
-graph_data['NN (pre-tuned)'] = y_hat_test
+graph_data['NN (pre-tuned)'] = df_result['y_hat']
 
 # Hyperparameter tuning
 if nn_hyperparameter_tune:
@@ -498,12 +528,12 @@ if nn_hyperparameter_tune:
         batch_size = random.sample(batch_size_list, 1)[0]
 
         # create dataset
-        nn_x_train, nn_y_train, _, idx, _ = prep_data(x_train=train_org,
-                                                      y_train=train_org['RUL'],
-                                                      x_test=test_org,
-                                                      remaining_sensors=remaining_sensors,
-                                                      lags=specific_lags,
-                                                      alpha=alpha)
+        nn_x_train, nn_y_train, _, idx = prep_data(x_train=train_org,
+                                                   y_train=train_org['RUL'],
+                                                   x_test=test_org,
+                                                   remaining_sensors=remaining_sensors,
+                                                   lags=specific_lags,
+                                                   alpha=alpha)
         # create model
         input_dim = len(nn_x_train.columns)
         model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
@@ -519,8 +549,8 @@ if nn_hyperparameter_tune:
             # train and evaluate model
             model.compile(loss='mean_squared_error', optimizer='adam')
             model.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
-            history = model.fit(X_train_split, y_train_split,
-                                validation_data=(X_val_split, y_val_split),
+            history = model.fit(X_train_split[remaining_sensors], y_train_split,
+                                validation_data=(X_val_split[remaining_sensors], y_val_split),
                                 epochs=epochs, batch_size=batch_size, verbose=0)
             mse.append(history.history['val_loss'][-1])
 
@@ -540,12 +570,13 @@ dropout = 0.2
 activation = 'tanh'
 batch_size = 64
 
-nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org,
-                                                               y_train=train_org['RUL'],
-                                                               x_test=test_org,
-                                                               remaining_sensors=remaining_sensors,
-                                                               lags=specific_lags,
-                                                               alpha=alpha)
+nn_x_train, nn_y_train, nn_x_test, _ = prep_data(x_train=train_org,
+                                                 y_train=train_org['RUL'],
+                                                 x_test=test_org,
+                                                 remaining_sensors=remaining_sensors,
+                                                 lags=specific_lags,
+                                                 alpha=alpha)
+nn_x_train_dropped = nn_x_train.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1)
 filename = 'finalized_tuned_NN_model.h5'
 if train_tuned_NN:
     input_dim = len(nn_x_train.columns)
@@ -558,21 +589,22 @@ if train_tuned_NN:
 
     nn_lagged_tuned.compile(loss='mean_squared_error', optimizer='adam')
     nn_lagged_tuned.load_weights(weights_file)
-    nn_lagged_tuned.fit(nn_x_train, nn_y_train, epochs=epochs, batch_size=batch_size, verbose=0)
+    nn_lagged_tuned.fit(nn_x_train_dropped, nn_y_train, epochs=epochs, batch_size=batch_size, verbose=0)
     nn_lagged_tuned.save(filename)  # save trained model
 
 # predict and evaluate
 nn_lagged_tuned = load_model(filename)
 print("tuned Neural Network")
-y_hat_val = nn_lagged_tuned.predict(nn_x_train)
-result = evaluate("NN (lagged+tuned)", nn_y_train, y_hat_val.flatten(), df_breakdown, 'train')
+nn_x_train['y_hat'] = nn_lagged_tuned.predict(nn_x_train_dropped)
+nn_x_train['RUL'] = nn_y_train
+result = evaluate("NN (lagged+tuned)", nn_x_train, 'train')
 list_results.append(result)
 
-test_idx = nn_x_test.index
-y_hat_test = nn_lagged_tuned.predict(nn_x_test)
-result = evaluate("NN (lagged+tuned)", test_org.iloc[test_idx]['RUL'], y_hat_test.flatten(),
-                  test_org.iloc[test_idx]['breakdown'], 'test')
-list_results.append(result)
+# test_idx = nn_x_test.index
+# y_hat_test = nn_lagged_tuned.predict(nn_x_test)
+# result = evaluate("NN (lagged+tuned)", test_org.iloc[test_idx]['RUL'], y_hat_test.flatten(),
+#                   test_org.iloc[test_idx]['breakdown'], 'test')
+# list_results.append(result)
 # graph_data['NN (pre-tuned)'] = y_hat_test
 
 ################################
@@ -586,29 +618,29 @@ print("Started Random Survival Forest")
 rsf_x = train_clipped.copy()
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
 
-rsf_y = rsf_x[['breakdown', 'cycle', 'RUL']]
+rsf_y = rsf_x[['breakdown', 'cycle']]
 rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
 rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 
-rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25)
+rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25, random_state=6)
 
-attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
-rsf_x_dropped = rsf_x_train.drop(attribute_dropped, axis=1)
-rsf_y_dropped = rsf_y_train.drop('RUL', axis=1)
+# attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
+# rsf_x_dropped = rsf_x_train.drop(attribute_dropped, axis=1)
+# rsf_y_dropped = rsf_y_train.drop('RUL', axis=1)
 
 # Training RSF
 print("Predicting rsf")
 rsf_filename = 'finalized_untuned_rsf_model.sav'
 if train_untuned_rsf:
     from randomsurvivalforest import train_rsf
-    train_rsf(rsf_x_dropped, rsf_y_dropped, rsf_filename)
+
+    train_rsf(rsf_x_train[remaining_sensors], rsf_y, rsf_filename)
 rsf = pickle.load(open(rsf_filename, 'rb'))
+
 
 # Estimate remaining useful life
 def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
-    attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
-    rsf_x_dropped = rsf_x.drop(attribute_dropped, axis=1)
-    surv = rsf.predict_survival_function(rsf_x_dropped, return_array=True)  # return S(t) for each data point
+    surv = rsf.predict_survival_function(rsf_x[remaining_sensors], return_array=True)  # return S(t) for each data point
 
     rsf_rmst = []  # create a list to store the rmst of each survival curve
 
@@ -627,10 +659,13 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # plt.grid(True)
     # plt.show()
 
-    rsf_RUL = rsf_rmst - rsf_x['cycle']
-    #rsf_RUL = rsf_RUL.clip(upper=clip_level)
-    result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
-    return result_interim, rsf_RUL
+    rsf_x['y_hat'] = rsf_rmst - rsf_x['cycle']
+    # rsf_RUL = rsf_RUL.clip(upper=clip_level)
+    print('The C-index (worse being nearer to 1) is ',
+          rsf.score(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y)))
+    result_interim = evaluate(name, rsf_x, label)
+    return result_interim, rsf_x['y_hat']
+
 
 # print(list(rsf_x_val.columns.values))
 result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
@@ -645,7 +680,7 @@ graph_data['rsf (pre-tuned)'] = y_hat
 
 
 def save_obj(obj, name):
-    with open('obj/'+ name + '.pkl', 'wb') as f:
+    with open('obj/' + name + '.pkl', 'wb') as f:
         pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
 
 
@@ -681,14 +716,15 @@ if rsf_hyperparameter_tune:
                                     n_jobs=-1)
 
     # Fit the random search model
-    rsf_random.fit(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped))
+    rsf_random.fit(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y))
     save_obj(rsf_random.best_params_, "tuned_rsf_param")
     print(rsf_random.best_params_)
 
 rsf_filename = 'finalized_tuned_rsf_model.sav'
 if train_tuned_rsf:
     from randomsurvivalforest import train_rsf
-    train_rsf(rsf_x_dropped, rsf_y_dropped, rsf_filename, True)  # True to train tuned model
+
+    train_rsf(rsf_x[remaining_sensors], rsf_y, rsf_filename, True)  # True to train tuned model
 rsf_tuned = pickle.load(open(rsf_filename, 'rb'))
 
 result, _ = evaluate_rsf("rsf (tuned)", rsf_tuned, rsf_x_val, rsf_y_val, 'train')
@@ -730,6 +766,5 @@ graph_data.to_csv("graphing.csv", index=False)
 # show graph
 if show_graph:
     from graphing import make_graph
+
     make_graph([31, 38, 78, 91, 5, 46, 55, 82])
-
-
