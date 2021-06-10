@@ -235,7 +235,7 @@ rsf_hyperparameter_tune = False
 train_tuned_rsf = False
 
 # If graph should be displayed at the end
-show_graph = False
+show_graph = True
 
 ################################
 #   General Data pre-processing
@@ -675,12 +675,6 @@ result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, rsf_test_y, '
 list_results.append(result)
 graph_data['rsf (pre-tuned)'] = y_hat
 
-
-def save_obj(obj, name):
-    with open('obj/' + name + '.pkl', 'wb') as f:
-        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
-
-
 # Hyperparameter tuning RSF
 if rsf_hyperparameter_tune:
     # Number of trees in random forest
@@ -706,17 +700,16 @@ if rsf_hyperparameter_tune:
     rsf = RandomSurvivalForest()
     rsf_random = RandomizedSearchCV(estimator=rsf,
                                     param_distributions=random_grid,
-                                    n_iter=1,
+                                    n_iter=10,
                                     cv=3,
                                     verbose=10,
-                                    random_state=42,
+                                    random_state=5,
                                     n_jobs=-1)
-
     # Fit the random search model
     rsf_random.fit(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y))
-    save_obj(rsf_random.best_params_, "tuned_rsf_param")
     print(rsf_random.best_params_)
 
+print("done with tuning, start training")
 rsf_filename = 'finalized_tuned_rsf_model.sav'
 if train_tuned_rsf:
     from randomsurvivalforest import train_rsf
