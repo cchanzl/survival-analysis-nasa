@@ -1,12 +1,9 @@
 import os
-
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
-
 from datetime import datetime  # to timestamp results of each model
-
 now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-
 import pandas as pd
+pd.options.mode.chained_assignment = None
 import numpy as np
 import random
 import matplotlib.pyplot as plt
@@ -329,20 +326,22 @@ kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 
 # estimate restricted mean survival time from KM curve
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
-km_train['km_rmst'] = km_rmst
-km_rmst_arr = [km_rmst for x in range(len(km_train))]
-km_train['y_hat'] = km_rmst_arr - km_train['cycle']
+df_result = train_clipped.copy()
+df_result['km_rmst'] = km_rmst
+km_rmst_arr = [km_rmst for x in range(len(df_result))]
+df_result['y_hat'] = km_rmst_arr - df_result['cycle']
+df_result['y_hat'].where(df_result['y_hat'] >= 0, 0, inplace=True)
 # y_hat = y_hat.clip(upper=clip_level)
-result = evaluate("KM_rmst", km_train, 'train')
+result = evaluate("KM_rmst", df_result, 'train')
 list_results.append(result)
 
 km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
 df_result = test_clipped.copy()
 df_result['y_hat'] = km_rmst_arr - df_result['cycle']
+df_result['y_hat'].where(df_result['y_hat'] >= 0, 0, inplace=True)
 # y_hat = y_hat.clip(upper=clip_level)
 result = evaluate("KM_rmst", df_result, 'test')
 list_results.append(result)
-df_result.to_csv("km_test_ci.csv", index=False)
 
 graph_data['km_rmst'] = df_result['y_hat']
 
@@ -425,8 +424,7 @@ graph_data['RF (pre-tuned)'] = df_result['y_hat']
 # rf.estimators_[5].tree_.n_node_samples    # check how many samples in the last nodes
 
 # crudely tweaked random forest
-rf = RandomForestRegressor(n_estimators=100, max_features="sqrt", random_state=42,
-                           max_depth=8, min_samples_leaf=50)
+rf = RandomForestRegressor(n_estimators=100, max_features="sqrt", random_state=42, max_depth=8, min_samples_leaf=50)
 rf.fit(rf_x_train[remaining_sensors], rf_y_train)
 
 # predict and evaluate
@@ -660,9 +658,8 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # plt.show()
 
     rsf_x['y_hat'] = rsf_rmst - rsf_x['cycle']
+    rsf_x['y_hat'].where(rsf_x['y_hat'] >= 0, 0, inplace=True)
     # rsf_RUL = rsf_RUL.clip(upper=clip_level)
-    print('The C-index (worse being nearer to 1) is ',
-          rsf.score(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y)))
     result_interim = evaluate(name, rsf_x, label)
     return result_interim, rsf_x['y_hat']
 
