@@ -14,20 +14,18 @@ graph_data = pd.read_csv('graphing.csv', delimiter=",")
 
 
 def make_graph(selected_unit_num):
-    fig = plt.figure()
-    models = ['RUL', 'km_rmst', 'Cox', 'RF (tuned)', 'rsf (pre-tuned)']
-    i = 1
-    for num in selected_unit_num:
-        df_graph = graph_data[graph_data['unit num'] == num]
-        for col in models:
-            plt.subplot(4, 2, i)
-            plt.plot(df_graph['cycle'], df_graph[col], label=col)
-            plt.gca().set_title(num)
+    fig, axs = plt.subplots(int(len(selected_unit_num)/2), 2)
+    models = ['RUL', 'km_rmst', 'Cox', 'RF (pre-tuned)', 'RF (tuned)', 'rsf (pre-tuned)']
+    i = -1
+    for ax in axs.flatten():
         i += 1
+        df_graph = graph_data[graph_data['unit num'] == selected_unit_num[i]]
+        for col in models:
+            ax.plot(df_graph['cycle'], df_graph[col], label=col)
+            ax.set_title('Test observation ' + str(selected_unit_num[i]))
     plt.xlabel('Cycles')
     plt.ylabel('RUL')
     plt.legend()
     plt.show()
-
 
 make_graph([5, 6, 20, 31, 38, 55, 78, 91])

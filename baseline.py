@@ -300,12 +300,15 @@ kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 # estimate restricted mean survival time from KM curve
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
 km_train['km_rmst'] = km_rmst
-
-result = evaluate("KM_rmst", km_train['RUL'], km_train['km_rmst'], km_train['breakdown'], 'train')
+km_rmst_arr = [km_rmst for x in range(len(km_train))]
+y_hat = km_rmst_arr - km_train['cycle']
+y_hat = y_hat.clip(upper=clip_level)
+result = evaluate("KM_rmst", km_train['RUL'], y_hat, km_train['breakdown'], 'train')
 list_results.append(result)
 
 km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
 y_hat = km_rmst_arr - test_clipped['cycle']
+y_hat = y_hat.clip(upper=clip_level)
 result = evaluate("KM_rmst", test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
 
@@ -379,6 +382,7 @@ x_test_clipped_dropped = test_clipped.drop(['cycle', 'unit num', 'breakdown', 's
 y_hat_test = rf.predict(x_test_clipped_dropped)
 result = evaluate("RF (pre-tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
 list_results.append(result)
+graph_data['RF (pre-tuned)'] = y_hat_test
 
 # perform some checks on layout of a SINGLE tree
 # print(rf.estimators_[5].tree_.max_depth)  # check how many nodes in the longest path
@@ -590,7 +594,6 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # if label != 'test':
     attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
     rsf_x_dropped = rsf_x.drop(attribute_dropped, axis=1)
-    rsf_y_dropped = rsf_y.drop('RUL', axis=1)
     surv = rsf.predict_survival_function(rsf_x_dropped, return_array=True)  # return S(t) for each data point
 
     rsf_rmst = []  # create a list to store the rmst of each survival curve
@@ -611,10 +614,7 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     # plt.show()
 
     rsf_RUL = rsf_rmst - rsf_x['cycle']
-    # print('The C-index (scikit-survival) is ', ci_scikit(rsf_y['breakdown'], rsf_y['RUL'], rsf_RUL)[0])
-    # print('The C-index (worse being nearer to 1) is ',
-    #      rsf.score(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped)))
-
+    rsf_RUL = rsf_RUL.clip(upper=clip_level)
     result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
     return result_interim, rsf_RUL
 
@@ -658,6 +658,6 @@ graph_data.to_csv("graphing.csv", index=False)
 # show graph
 if show_graph:
     from graphing import make_graph
-    make_graph([31, 38, 78, 91])
+    make_graph([5, 6, 20, 31, 38, 55, 78, 91])
 
 
