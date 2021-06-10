@@ -596,7 +596,7 @@ list_results.append(result)
 
 df_result = test_clipped.copy()
 df_result['y_hat'] = nn_lagged_tuned.predict(nn_x_test[remaining_sensors])
-result = evaluate("NN (lagged+tuned)", df_result, 'test')
+result = evaluate("NN (smoothed+tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (smoothed+tuned)'] = df_result['y_hat']
 
