@@ -1,8 +1,11 @@
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
 from datetime import datetime  # to timestamp results of each model
+
 now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 import pandas as pd
+
 pd.options.mode.chained_assignment = None
 import numpy as np
 import random
@@ -146,12 +149,10 @@ def minmax_scaler(df_train, df_test, sensor_names):
     # scale train set
     df_train_scaled = df_train.copy()
     df_train_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_train[sensor_names]),
-                                                 columns=sensor_names)
-
+                                                 columns=sensor_names, index=df_train_scaled.index)
     # scale test set
     df_test_scaled = df_test.copy()
-    # df_test_scaled = df_test_scaled.drop('cycle', axis=1).groupby('unit num').last().copy()
-    df_test_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_test_scaled[sensor_names]),
+    df_test_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_test[sensor_names]),
                                                 columns=sensor_names,
                                                 index=df_test_scaled.index)
     return df_train_scaled, df_test_scaled
@@ -191,17 +192,13 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
     X_train_interim = exponential_smoothing(X_train_interim, remaining_sensors, n, alpha)
     X_test_interim = exponential_smoothing(X_test_interim, remaining_sensors, n, alpha)
 
-    X_train_interim = add_specific_lags(X_train_interim, lags, remaining_sensors)
-    X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
+    # X_train_interim = add_specific_lags(X_train_interim, lags, remaining_sensors)
+    # X_test_interim = add_specific_lags(X_test_interim, lags, remaining_sensors)
 
-    # X_train_breakdown = X_train_interim['breakdown']
-    # X_train_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
-    # X_test_interim.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1, inplace=True)
+    # train_idx = X_train_interim.index
+    # y_train = y_train.iloc[train_idx]
 
-    train_idx = X_train_interim.index
-    y_train = y_train.iloc[train_idx]
-
-    return X_train_interim, y_train, X_test_interim, train_idx
+    return X_train_interim, y_train, X_test_interim
 
 
 ################################
@@ -224,8 +221,8 @@ train_untuned_NN = False
 
 # to perform hyperparameter search for NN?
 nn_hyperparameter_tune = False
-n_Iterations = 100
-train_tuned_NN = False
+n_Iterations = 500
+train_tuned_NN = True
 
 # to re-train untuned rsf
 train_untuned_rsf = False
@@ -447,12 +444,11 @@ graph_data['RF (tuned)'] = df_result['y_hat']
 print(delimiter)
 print("Started Neural Network")
 # make a copy of the original full dataset as we need to scale it for NN
-train_NN = train_org.copy()  # why cannot use clipped data?
+train_NN = train_clipped.copy()
 
 # scaling using minmax
 nn_y_train = train_NN.pop('RUL')
-nn_x_train_scaled, nn_x_test_scaled = minmax_scaler(train_NN, test_org, remaining_sensors)
-
+nn_x_train_scaled, nn_x_test_scaled = minmax_scaler(train_NN, test_clipped, remaining_sensors)
 # split scaled dataset into train test split
 gss = GroupShuffleSplit(n_splits=1, train_size=0.80,
                         random_state=42)  # even though we set np and tf seeds, gss requires its own seed
@@ -526,19 +522,20 @@ if nn_hyperparameter_tune:
         batch_size = random.sample(batch_size_list, 1)[0]
 
         # create dataset
-        nn_x_train, nn_y_train, _, idx = prep_data(x_train=train_org,
-                                                   y_train=train_org['RUL'],
-                                                   x_test=test_org,
-                                                   remaining_sensors=remaining_sensors,
-                                                   lags=specific_lags,
-                                                   alpha=alpha)
+        train_clipped.to_csv("train_clipped.csv", index=False)
+        nn_x_train, nn_y_train, _ = prep_data(x_train=train_clipped,
+                                              y_train=train_clipped['RUL'],
+                                              x_test=test_clipped,
+                                              remaining_sensors=remaining_sensors,
+                                              lags=specific_lags,
+                                              alpha=alpha)
         # create model
-        input_dim = len(nn_x_train.columns)
+        nn_x_train.to_csv("nn_x_train.csv", index=False)
+        input_dim = len(nn_x_train[remaining_sensors].columns)
         model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
-
         # create train-validation split
         gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
-        for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train, groups=train_org.iloc[idx]['unit num']):
+        for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train, groups=train_clipped['unit num']):
             X_train_split = nn_x_train.iloc[idx_train].copy()
             y_train_split = nn_y_train.iloc[idx_train].copy()
             X_val_split = nn_x_train.iloc[idx_val].copy()
@@ -560,24 +557,23 @@ if nn_hyperparameter_tune:
 
     results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
 
-alpha = 0.05
-epochs = 30
+alpha = 0.19
+epochs = 40
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
-nodes = [64, 128, 256]
-dropout = 0.2
-activation = 'tanh'
-batch_size = 64
+nodes = [128, 256, 512]
+dropout = 0.15
+activation = 'sigmoid'
+batch_size = 32
 
-nn_x_train, nn_y_train, nn_x_test, _ = prep_data(x_train=train_org,
-                                                 y_train=train_org['RUL'],
-                                                 x_test=test_org,
-                                                 remaining_sensors=remaining_sensors,
-                                                 lags=specific_lags,
-                                                 alpha=alpha)
-nn_x_train_dropped = nn_x_train.drop(['unit num', 'cycle', 'RUL', 'breakdown', 'start'], axis=1)
+nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=train_clipped,
+                                              y_train=train_clipped['RUL'],
+                                              x_test=test_clipped,
+                                              remaining_sensors=remaining_sensors,
+                                              lags=specific_lags,
+                                              alpha=alpha)
 filename = 'finalized_tuned_NN_model.h5'
 if train_tuned_NN:
-    input_dim = len(nn_x_train.columns)
+    input_dim = len(nn_x_train[remaining_sensors].columns)
     weights_file = 'mlp_hyper_parameter_weights'
     nn_lagged_tuned = create_model(input_dim,
                                    nodes_per_layer=nodes,
@@ -587,23 +583,22 @@ if train_tuned_NN:
 
     nn_lagged_tuned.compile(loss='mean_squared_error', optimizer='adam')
     nn_lagged_tuned.load_weights(weights_file)
-    nn_lagged_tuned.fit(nn_x_train_dropped, nn_y_train, epochs=epochs, batch_size=batch_size, verbose=0)
+    nn_lagged_tuned.fit(nn_x_train[remaining_sensors], nn_y_train, epochs=epochs, batch_size=batch_size, verbose=0)
     nn_lagged_tuned.save(filename)  # save trained model
 
 # predict and evaluate
 nn_lagged_tuned = load_model(filename)
 print("tuned Neural Network")
-nn_x_train['y_hat'] = nn_lagged_tuned.predict(nn_x_train_dropped)
+nn_x_train['y_hat'] = nn_lagged_tuned.predict(nn_x_train[remaining_sensors])
 nn_x_train['RUL'] = nn_y_train
 result = evaluate("NN (lagged+tuned)", nn_x_train, 'train')
 list_results.append(result)
 
-# test_idx = nn_x_test.index
-# y_hat_test = nn_lagged_tuned.predict(nn_x_test)
-# result = evaluate("NN (lagged+tuned)", test_org.iloc[test_idx]['RUL'], y_hat_test.flatten(),
-#                   test_org.iloc[test_idx]['breakdown'], 'test')
-# list_results.append(result)
-# graph_data['NN (pre-tuned)'] = y_hat_test
+df_result = test_clipped.copy()
+df_result['y_hat'] = nn_lagged_tuned.predict(nn_x_test[remaining_sensors])
+result = evaluate("NN (lagged+tuned)", df_result, 'test')
+list_results.append(result)
+graph_data['NN (smoothed+tuned)'] = df_result['y_hat']
 
 ################################
 #   Random Survival Forest
