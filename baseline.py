@@ -42,11 +42,6 @@ y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
 df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
-# create df to append result of each model
-evaluation_metrics = ["RMSE", "CI_SK", "R2"]
-results_header = ["model_name", "train_test"] + evaluation_metrics
-list_results = []
-
 
 ##########################
 #   Helper Functions
@@ -92,10 +87,6 @@ def exponential_model(z, a, b):
 
 def train_val_group_split(X, y, gss, groups, print_groups=False):
     for idx_train, idx_val in gss.split(X, y, groups=groups):
-        if print_groups:
-            print('train_split_engines', train_clipped_dropped.iloc[idx_train]['unit num'].unique(), '\n')
-            print('validate_split_engines', train_clipped_dropped.iloc[idx_val]['unit num'].unique(), '\n')
-
         X_train_split = X.iloc[idx_train].copy()
         y_train_split = y.iloc[idx_train].copy()
         X_val_split = X.iloc[idx_val].copy()
@@ -194,6 +185,32 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
 
 
 ################################
+#   Global variables
+################################
+
+# set upper bound to integrate survival function to find RMST
+# kaplan-meier and rsf is highly sensitive to this as they use this to integrate S(t)
+rmst_upper_bound = 200
+
+# clip RUL if above a certain level to improve training
+clip_level = 150
+
+# set if pseudo right censoring be performed on dataset at designated cut-off
+right_censoring = True
+cut_off = 200
+
+# to re-train untuned baseline NN?
+train_untuned_NN = False
+
+# to perform hyperparameter search?
+nn_hyperparameter_tune = False
+n_Iterations = 100
+train_tuned_NN = False
+
+# If graph should be displayed at the end
+show_graph = True
+
+################################
 #   General Data pre-processing
 ################################
 
@@ -240,22 +257,23 @@ test_org.at[idx_last_record, 'breakdown'] = 1
 train_org['start'] = train_org['cycle'] - 1
 test_org['start'] = test_org['cycle'] - 1
 
-# apply a floor to RUL. 125 is selected as the min cycle is 128. See EDA.
+# apply a floor to RUL in training data. 125 is selected as the min cycle is 128. See EDA.
 train_clipped = train_org.copy()
-train_clipped['RUL'] = train_clipped['RUL'].clip(upper=125)
+train_clipped['RUL'] = train_clipped['RUL'].clip(upper=clip_level)
 test_clipped = test_org.copy()
-test_clipped['RUL'] = test_clipped['RUL'].clip(upper=125)
+test_clipped['RUL'] = test_clipped['RUL'].clip(upper=clip_level)
 
-# Apply cut-off
-cut_off = 200  # Important to improve accuracy
-train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
-test_clipped = test_clipped[test_clipped['cycle'] <= cut_off].copy()
-# with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-#     print(train_clipped[['unit num', 'cycle', 'RUL']])
+# Apply psuedo right censoring in training data. Important to improve accuracy and simulate right censoring
+if right_censoring:
+    train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
 
-# Initilise columns used for training and prediction
-train_cols = ['unit num', 'cycle'] + remaining_sensors + ['start', 'breakdown']
-predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdown value will be 0
+# create df to append result of each model
+evaluation_metrics = ["RMSE", "CI_SK", "R2"]
+results_header = ["model_name", "train_test"] + evaluation_metrics
+list_results = []
+
+# create df to append y_hat and y_pred for graph plotting
+graph_data = test_clipped.copy()
 
 ################################
 #   Kaplan-Meier Curve
@@ -263,6 +281,10 @@ predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdo
 
 print(delimiter)
 print("Started Kaplan-Meier")
+
+# Initilise columns used for training and prediction
+train_cols = ['unit num', 'cycle'] + remaining_sensors + ['start', 'breakdown']
+predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdown value will be 0
 
 km_train = train_clipped[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
 
@@ -276,7 +298,7 @@ kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 # plt.close()
 
 # estimate restricted mean survival time from KM curve
-km_rmst = restricted_mean_survival_time(kaplanMeier, t=cut_off)
+km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
 km_train['km_rmst'] = km_rmst
 
 result = evaluate("KM_rmst", km_train['RUL'], km_train['km_rmst'], km_train['breakdown'], 'train')
@@ -286,6 +308,8 @@ km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
 y_hat = km_rmst_arr - test_clipped['cycle']
 result = evaluate("KM_rmst", test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
+
+graph_data['km_rmst'] = y_hat
 
 ################################
 #   Cox-PH Model
@@ -298,48 +322,6 @@ print("Started Cox PH")
 ctv = CoxTimeVaryingFitter()
 ctv.fit(train_clipped[train_cols], id_col="unit num", event_col='breakdown',
         start_col='start', stop_col='cycle', show_progress=True, step_size=1)
-# ctv.print_summary()
-# plt.figure(figsize=(10, 5))
-# ctv.plot()
-# plt.show()
-
-# get engines from dataset which are still functioning but right censored to predict their RUL
-df = train_clipped.groupby("unit num").last()  # get the last entry of each engine unit
-train_log_ph = df[df['breakdown'] == 0].copy()
-train_log_ph.reset_index(inplace=True)
-
-# Predict log_partial_hazard for engines that have not broke down
-predictions = ctv.predict_log_partial_hazard(train_log_ph[predict_cols])
-predictions = predictions.to_frame()
-predictions.rename(columns={0: "predictions"}, inplace=True)
-
-predictions['unit num'] = train_log_ph['unit num']
-predictions['RUL'] = train_log_ph['RUL']
-
-# plt.figure(figsize=(15, 5))
-# plt.plot(predictions['RUL'], predictions['predictions'], '.b')
-# xlim = plt.gca().get_xlim()
-# plt.xlim(xlim[1], xlim[0])
-# plt.xlabel('RUL')
-# plt.ylabel('log_partial_hazard')
-# plt.show()
-
-# Plot log_partial_hazard against RUL to see trend
-train_log_ph.set_index('unit num', inplace=True)
-X = train_clipped.loc[train_clipped['unit num'].isin(train_log_ph.index)]
-X_unique = len(X['unit num'].unique())
-
-# plt.figure(figsize=(15, 5))
-# for i in range(1, X_unique, 2):
-#     X_sub = X.loc[X['unit num'] == i]
-#     if X_sub.empty:
-#         continue
-#     predictions = ctv.predict_partial_hazard(X_sub)
-#     predictions = predictions.to_frame()[0].values
-#     plt.plot(X_sub['cycle'].values, np.log(predictions))
-# plt.xlabel('cycle')
-# plt.ylabel('log_partial_hazard')
-# plt.show()
 
 # Calculate log_partial_hazard for all data points
 train_cox = train_clipped.copy()  # need to make a copy so that we can add 'hazard' later
@@ -365,6 +347,7 @@ y_pred = ctv.predict_log_partial_hazard(test_clipped)
 y_hat = exponential_model(y_pred, *popt)
 result = evaluate('Cox', test_clipped['RUL'], y_hat, test_clipped['breakdown'], 'test')
 list_results.append(result)
+graph_data['Cox'] = y_hat
 
 ################################
 #   Random Forest
@@ -375,12 +358,15 @@ list_results.append(result)
 print(delimiter)
 print("Started Random Forest")
 
-rf = RandomForestRegressor(n_estimators=100, criterion="mse", max_features="sqrt", random_state=42)
+# data preparation
 rf_x = train_clipped.copy()
 rf_y = rf_x.pop('RUL')
 rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25)
 rf_x_train_dropped = rf_x_train.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
 rf_x_val_dropped = rf_x_val.drop(['cycle', 'unit num', 'breakdown', 'start'], axis=1)
+
+# model fitting
+rf = RandomForestRegressor(n_estimators=100, criterion="mse", max_features="sqrt", random_state=42)
 rf.fit(rf_x_train_dropped, rf_y_train)
 
 # predict and evaluate, without any hyperparameter tuning
@@ -411,10 +397,8 @@ list_results.append(result)
 
 y_hat_test = rf.predict(x_test_clipped_dropped)
 result = evaluate("RF (tuned)", test_clipped['RUL'], y_hat_test, test_clipped['breakdown'], 'test')
-# to_compare = y_test.copy()
-# to_compare["pred"] = y_hat_test.tolist()
-# print(to_compare)
 list_results.append(result)
+graph_data['RF (tuned)'] = y_hat_test
 
 ################################
 #   Neural Network
@@ -439,9 +423,8 @@ nn_x_train_scaled, nn_y_train, nn_x_val_scaled, nn_y_val = train_val_group_split
                                                                                  nn_x_train_scaled['unit num'])
 
 # training the model
-train = False
 filename = 'finalized_pretuned_NN_model.h5'
-if train:
+if train_untuned_NN:
     # construct neural network
     model = Sequential()
     model.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
@@ -468,8 +451,7 @@ result = evaluate("NN (pre-tuned)", test_org['RUL'], y_hat_test.flatten(), test_
 list_results.append(result)
 
 # hyperparameter tuning
-tune = False
-if tune:
+if nn_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
     nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
@@ -481,7 +463,7 @@ if tune:
     activation_functions = ['tanh', 'sigmoid']
     batch_size_list = [16, 32, 64, 128, 256, 512]
 
-    ITERATIONS = 10
+    ITERATIONS = n_Iterations
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -551,9 +533,8 @@ nn_x_train, nn_y_train, nn_x_test, _, df_breakdown = prep_data(x_train=train_org
                                                                remaining_sensors=remaining_sensors,
                                                                lags=specific_lags,
                                                                alpha=alpha)
-train = False
 filename = 'finalized_tuned_NN_model.h5'
-if train:
+if train_tuned_NN:
     input_dim = len(nn_x_train.columns)
     weights_file = 'mlp_hyper_parameter_weights'
     nn_lagged_tuned = create_model(input_dim,
@@ -620,7 +601,7 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
         # calculate rmst
         df_s = pd.DataFrame(s)
         df_s.set_index(rsf.event_times_, inplace=True)
-        km_rmst = restricted_mean_survival_time(df_s, t=cut_off)  # calculate restricted mean survival time
+        km_rmst = restricted_mean_survival_time(df_s, t=rmst_upper_bound)  # calculate restricted mean survival time
         rsf_rmst.append(km_rmst)
 
     # plt.ylabel("Survival probability")
@@ -635,17 +616,18 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     #      rsf.score(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped)))
 
     result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
-    return result_interim
+    return result_interim, rsf_RUL
 
 
-result = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
+result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
 list_results.append(result)
 
 rsf_test_y = test_clipped[['breakdown', 'cycle', 'RUL']]
 rsf_test_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
 rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
-result = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, rsf_test_y, 'test')
+result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, rsf_test_y, 'test')
 list_results.append(result)
+graph_data['rsf (pre-tuned)'] = y_hat
 
 ################################
 #   Save results of each model
@@ -667,7 +649,15 @@ df_results.sort_values(by=['train_test', 'RMSE'], ascending=[True, True], inplac
 with pd.option_context('display.max_rows', None, 'display.max_columns', None):
     print(df_results)
 
-    # save file
-    full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
-    filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
-    df_results.to_csv(filename, index=False)
+# save file
+full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
+filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
+df_results.to_csv(filename, index=False)
+graph_data.to_csv("graphing.csv", index=False)
+
+# show graph
+if show_graph:
+    from graphing import make_graph
+    make_graph([31, 38, 78, 91])
+
+
