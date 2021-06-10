@@ -25,6 +25,7 @@ from keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 import pickle
 from sksurv.metrics import concordance_index_censored as ci_scikit
+from sklearn.model_selection import RandomizedSearchCV
 
 ##########################
 #   Loading Data
@@ -37,7 +38,7 @@ for i in range(0, 26):
     name = name + str(i + 1)
     header.append(name)
 
-full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/Dataset/"
+full_path = "Dataset/"
 y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
 df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
@@ -202,7 +203,7 @@ cut_off = 200
 # to re-train untuned baseline NN?
 train_untuned_NN = False
 
-# to perform hyperparameter search?
+# to perform hyperparameter search for NN?
 nn_hyperparameter_tune = False
 n_Iterations = 100
 train_tuned_NN = False
@@ -210,8 +211,12 @@ train_tuned_NN = False
 # to re-train untuned rsf
 train_untuned_rsf = False
 
+# to perform hyperparameter search for rsf?
+rsf_hyperparameter_tune = False
+train_tuned_rsf = False
+
 # If graph should be displayed at the end
-show_graph = True
+show_graph = False
 
 ################################
 #   General Data pre-processing
@@ -458,7 +463,7 @@ result = evaluate("NN (pre-tuned)", test_org['RUL'], y_hat_test.flatten(), test_
 list_results.append(result)
 graph_data['NN (pre-tuned)'] = y_hat_test
 
-# hyperparameter tuning
+# Hyperparameter tuning
 if nn_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
@@ -587,12 +592,16 @@ rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or fals
 
 rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25)
 
-# Predicting RSF
+attribute_dropped = ['unit num', 'cycle', 'RUL', 'breakdown', 'start']
+rsf_x_dropped = rsf_x_train.drop(attribute_dropped, axis=1)
+rsf_y_dropped = rsf_y_train.drop('RUL', axis=1)
+
+# Training RSF
 print("Predicting rsf")
-rsf_filename = 'finalized_rsf_model.sav'
+rsf_filename = 'finalized_untuned_rsf_model.sav'
 if train_untuned_rsf:
     from randomsurvivalforest import train_rsf
-    train_rsf(rsf_x_train, rsf_y_train, rsf_filename)
+    train_rsf(rsf_x_dropped, rsf_y_dropped, rsf_filename)
 rsf = pickle.load(open(rsf_filename, 'rb'))
 
 # Estimate remaining useful life
@@ -623,7 +632,7 @@ def evaluate_rsf(name, rsf, rsf_x, rsf_y, label):
     result_interim = evaluate(name, rsf_y['RUL'], rsf_RUL, rsf_y['breakdown'], label)
     return result_interim, rsf_RUL
 
-print(list(rsf_x_val.columns.values))
+# print(list(rsf_x_val.columns.values))
 result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, rsf_y_val, 'train')
 list_results.append(result)
 
@@ -633,6 +642,64 @@ rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or
 result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, rsf_test_y, 'test')
 list_results.append(result)
 graph_data['rsf (pre-tuned)'] = y_hat
+
+
+def save_obj(obj, name):
+    with open('obj/'+ name + '.pkl', 'wb') as f:
+        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+
+
+# Hyperparameter tuning RSF
+if rsf_hyperparameter_tune:
+    # Number of trees in random forest
+    n_estimators = [int(x) for x in np.linspace(start=200, stop=2000, num=10)]
+    # Maximum number of levels in tree
+    max_depth = [int(x) for x in np.linspace(10, 110, num=11)]
+    # Number of features to consider at every split
+    max_features = ['auto', 'sqrt']
+    # Minimum number of samples required to split a node
+    min_samples_split = [2, 5, 10]
+    # Minimum number of samples required at each leaf node
+    min_samples_leaf = [1, 2, 4]
+
+    # Create the random grid
+    random_grid = {'n_estimators': n_estimators,
+                   'max_features': max_features,
+                   'max_depth': max_depth,
+                   'min_samples_split': min_samples_split,
+                   'min_samples_leaf': min_samples_leaf}
+    # print(random_grid)
+
+    # perform random search
+    rsf = RandomSurvivalForest()
+    rsf_random = RandomizedSearchCV(estimator=rsf,
+                                    param_distributions=random_grid,
+                                    n_iter=1,
+                                    cv=3,
+                                    verbose=10,
+                                    random_state=42,
+                                    n_jobs=-1)
+
+    # Fit the random search model
+    rsf_random.fit(rsf_x_dropped, Surv.from_dataframe('breakdown', 'cycle', rsf_y_dropped))
+    save_obj(rsf_random.best_params_, "tuned_rsf_param")
+    print(rsf_random.best_params_)
+
+rsf_filename = 'finalized_tuned_rsf_model.sav'
+if train_tuned_rsf:
+    from randomsurvivalforest import train_rsf
+    train_rsf(rsf_x_dropped, rsf_y_dropped, rsf_filename, True)  # True to train tuned model
+rsf_tuned = pickle.load(open(rsf_filename, 'rb'))
+
+result, _ = evaluate_rsf("rsf (tuned)", rsf_tuned, rsf_x_val, rsf_y_val, 'train')
+list_results.append(result)
+
+rsf_test_y = test_clipped[['breakdown', 'cycle', 'RUL']]
+rsf_test_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
+rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
+result, y_hat = evaluate_rsf("rsf (tuned)", rsf_tuned, test_clipped, rsf_test_y, 'test')
+list_results.append(result)
+graph_data['rsf (tuned)'] = y_hat
 
 ################################
 #   Save results of each model
@@ -655,7 +722,7 @@ with pd.option_context('display.max_rows', None, 'display.max_columns', None):
     print(df_results)
 
 # save file
-full_path = "C:/Users/chanzl_thinkpad/Dropbox/Imperial/Individual Project/NASA/survival-analysis-nasa/results/"
+full_path = "results/"
 filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
 df_results.to_csv(filename, index=False)
 graph_data.to_csv("graphing.csv", index=False)
