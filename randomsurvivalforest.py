@@ -14,15 +14,15 @@ def train_rsf(rsf_x, rsf_y, rsf_filename, tune='False'):
 
     # Training RSF
     random_state = 20
-    if tune:
-        rsf = RandomSurvivalForest(n_estimators=140,
-                                   max_depth=70,
+    if tune:  # tuned
+        rsf = RandomSurvivalForest(n_estimators=114,
+                                   max_depth=46,
                                    min_samples_split=5,
-                                   min_samples_leaf=15,
+                                   min_samples_leaf=10,
                                    max_features="auto",
                                    n_jobs=-1,
                                    random_state=random_state)
-    else:
+    else:  # untuned
         rsf = RandomSurvivalForest(n_estimators=100,
                                    min_samples_split=10,
                                    min_samples_leaf=15,
