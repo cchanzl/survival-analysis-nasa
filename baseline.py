@@ -522,7 +522,6 @@ if nn_hyperparameter_tune:
         batch_size = random.sample(batch_size_list, 1)[0]
 
         # create dataset
-        train_clipped.to_csv("train_clipped.csv", index=False)
         nn_x_train, nn_y_train, _ = prep_data(x_train=train_clipped,
                                               y_train=train_clipped['RUL'],
                                               x_test=test_clipped,
@@ -530,7 +529,6 @@ if nn_hyperparameter_tune:
                                               lags=specific_lags,
                                               alpha=alpha)
         # create model
-        nn_x_train.to_csv("nn_x_train.csv", index=False)
         input_dim = len(nn_x_train[remaining_sensors].columns)
         model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
         # create train-validation split
@@ -557,13 +555,13 @@ if nn_hyperparameter_tune:
 
     results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
 
-alpha = 0.19
-epochs = 40
+alpha = 0.195
+epochs = 10
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
-nodes = [128, 256, 512]
-dropout = 0.15
-activation = 'sigmoid'
-batch_size = 32
+nodes = [32, 64, 128]
+dropout = 0.05
+activation = 'tanh'
+batch_size = 16
 
 nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=train_clipped,
                                               y_train=train_clipped['RUL'],
