@@ -228,7 +228,7 @@ train_tuned_NN = True
 train_untuned_rsf = False
 
 # to perform hyperparameter search for rsf?
-rsf_hyperparameter_tune = False
+rsf_hyperparameter_tune = True
 train_tuned_rsf = False
 
 # If graph should be displayed at the end
@@ -624,8 +624,7 @@ print("Predicting rsf")
 rsf_filename = 'finalized_untuned_rsf_model.sav'
 if train_untuned_rsf:
     from randomsurvivalforest import train_rsf
-
-    train_rsf(rsf_x_train[remaining_sensors], rsf_y, rsf_filename)
+    train_rsf(rsf_x_train[remaining_sensors], rsf_y_train, rsf_filename)
 rsf = pickle.load(open(rsf_filename, 'rb'))
 
 
@@ -671,15 +670,15 @@ graph_data['rsf (pre-tuned)'] = y_hat
 # Hyperparameter tuning RSF
 if rsf_hyperparameter_tune:
     # Number of trees in random forest
-    n_estimators = [int(x) for x in np.linspace(start=200, stop=2000, num=10)]
+    n_estimators = [int(x) for x in np.linspace(start=90, stop=200, num=10)]
     # Maximum number of levels in tree
-    max_depth = [int(x) for x in np.linspace(10, 110, num=11)]
+    max_depth = [int(x) for x in np.linspace(10, 120, num=10)]
     # Number of features to consider at every split
     max_features = ['auto', 'sqrt']
     # Minimum number of samples required to split a node
     min_samples_split = [2, 5, 10]
     # Minimum number of samples required at each leaf node
-    min_samples_leaf = [1, 2, 4]
+    min_samples_leaf = [2, 4, 6, 8, 10]
 
     # Create the random grid
     random_grid = {'n_estimators': n_estimators,

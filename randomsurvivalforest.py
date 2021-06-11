@@ -15,7 +15,7 @@ def train_rsf(rsf_x, rsf_y, rsf_filename, tune='False'):
     # Training RSF
     random_state = 20
     if tune:
-        rsf = RandomSurvivalForest(n_estimators=1400,
+        rsf = RandomSurvivalForest(n_estimators=140,
                                    max_depth=70,
                                    min_samples_split=5,
                                    min_samples_leaf=15,
@@ -23,7 +23,7 @@ def train_rsf(rsf_x, rsf_y, rsf_filename, tune='False'):
                                    n_jobs=-1,
                                    random_state=random_state)
     else:
-        rsf = RandomSurvivalForest(n_estimators=1000,
+        rsf = RandomSurvivalForest(n_estimators=100,
                                    min_samples_split=10,
                                    min_samples_leaf=15,
                                    max_features="sqrt",
@@ -31,8 +31,7 @@ def train_rsf(rsf_x, rsf_y, rsf_filename, tune='False'):
                                    random_state=random_state)
 
     print("Fitting rsf")
-    rsf.fit(rsf_x,
-            Surv.from_dataframe('breakdown', 'cycle', rsf_y))  # y only takes structured data
+    rsf.fit(rsf_x, Surv.from_dataframe('breakdown', 'cycle', rsf_y))  # y only takes structured data
 
     # save trained model
     pickle.dump(rsf, open(rsf_filename, 'wb'))
