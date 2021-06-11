@@ -257,15 +257,16 @@ train_untuned_NN = False
 
 # to perform hyperparameter search for NN?
 nn_hyperparameter_tune = False
-n_Iterations = 500
+nn_n_Iterations = 500
 train_tuned_NN = False
 
 # to re-train untuned rsf
-train_untuned_rsf = False
+train_untuned_rsf = True
 
 # to perform hyperparameter search for rsf?
 rsf_hyperparameter_tune = False
-train_tuned_rsf = False
+rsf_n_Iterations = 500
+train_tuned_rsf = True
 
 # If graph should be displayed at the end
 show_graph = True
@@ -535,7 +536,7 @@ if nn_hyperparameter_tune:
     activation_functions = ['tanh', 'sigmoid']
     batch_size_list = [16, 32, 64, 128, 256, 512]
 
-    ITERATIONS = n_Iterations
+    ITERATIONS = nn_n_Iterations
     results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
                                     'alpha', 'epochs',
                                     'nodes', 'dropout',
@@ -624,14 +625,14 @@ nn_lagged_tuned = load_model(filename)
 print("tuned Neural Network")
 nn_x_train['y_hat'] = nn_lagged_tuned.predict(nn_x_train[remaining_sensors])
 nn_x_train['RUL'] = nn_y_train
-result = evaluate("NN (smoothed+tuned)", nn_x_train, 'train')
+result = evaluate("NN (tuned)", nn_x_train, 'train')
 list_results.append(result)
 
 df_result = test_clipped.copy()
 df_result['y_hat'] = nn_lagged_tuned.predict(nn_x_test[remaining_sensors])
-result = evaluate("NN (smoothed+tuned)", df_result, 'test')
+result = evaluate("NN (tuned)", df_result, 'test')
 list_results.append(result)
-graph_data['NN (smoothed+tuned)'] = df_result['y_hat']
+graph_data['NN (tuned)'] = df_result['y_hat']
 
 ################################
 #   Random Survival Forest
@@ -643,14 +644,18 @@ print("Started Random Survival Forest")
 # Data preparation
 # rsf_x = train_clipped.copy()  # cannot use clip as we need the last RUL of the engine to train the model
 rsf_x = train_org.copy()  # hence we are using train_org
+rsf_x = rsf_x.reset_index().groupby(by='unit num').last()
+breakdown_0 = train_org.copy()
+breakdown_0 = breakdown_0.loc[breakdown_0['breakdown'] == 0]
+breakdown_0 = breakdown_0.sample(n=300)
+rsf_x.append(breakdown_0, ignore_index=True)  # mix of breakdown and non-breakdown
 rsf_x['RUL'] = rsf_x['RUL'].clip(upper=clip_level)
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
-rsf_x = rsf_x.reset_index().groupby(by='unit num').last()
 
 rsf_y = rsf_x[['breakdown', 'cycle']]
 rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
 rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
-rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25, random_state=6)
+rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25, random_state=7)
 
 # Training RSF
 print("Predicting rsf")
@@ -675,15 +680,15 @@ graph_data['rsf (pre-tuned)'] = y_hat
 # Hyperparameter tuning RSF
 if rsf_hyperparameter_tune:
     # Number of trees in random forest
-    n_estimators = [int(x) for x in np.linspace(start=90, stop=200, num=10)]
+    n_estimators = [int(x) for x in np.linspace(start=50, stop=150, num=5)]
     # Maximum number of levels in tree
     max_depth = [int(x) for x in np.linspace(10, 120, num=10)]
     # Number of features to consider at every split
     max_features = ['auto', 'sqrt']
     # Minimum number of samples required to split a node
-    min_samples_split = [2, 5, 10]
+    min_samples_split = [int(x) for x in np.linspace(start=5, stop=30, num=1)]
     # Minimum number of samples required at each leaf node
-    min_samples_leaf = [2, 4, 6, 8, 10]
+    min_samples_leaf = [int(x) for x in np.linspace(start=5, stop=30, num=1)]
 
     # Create the random grid
     random_grid = {'n_estimators': n_estimators,
@@ -697,8 +702,8 @@ if rsf_hyperparameter_tune:
     rsf = RandomSurvivalForest()
     rsf_random = RandomizedSearchCV(estimator=rsf,
                                     param_distributions=random_grid,
-                                    n_iter=10,
-                                    cv=3,
+                                    n_iter=rsf_n_Iterations,
+                                    cv=5,
                                     verbose=10,
                                     random_state=5,
                                     n_jobs=-1)

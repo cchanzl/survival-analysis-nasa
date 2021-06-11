@@ -15,14 +15,17 @@ graph_data = pd.read_csv('graphing.csv', delimiter=",")
 
 def make_graph(selected_unit_num):
     fig, axs = plt.subplots(int(len(selected_unit_num)/2), 2)
-    models = ['RUL', 'km_rmst', 'Cox', 'NN (pre-tuned)', 'NN (smoothed+tuned)', 'RF (tuned)', 'rsf (pre-tuned)', 'rsf (tuned)']
+    models = ['RUL', 'km_rmst', 'Cox', 'NN (tuned)', 'RF (tuned)', 'rsf (pre-tuned)', 'rsf (tuned)']
     i = -1
     for ax in axs.flatten():
         i += 1
         df_graph = graph_data[graph_data['unit num'] == selected_unit_num[i]]
+        ax.set_title('Test observation ' + str(selected_unit_num[i]))
         for col in models:
-            ax.plot(df_graph['cycle'], df_graph[col], label=col)
-            ax.set_title('Test observation ' + str(selected_unit_num[i]))
+            if col == 'RUL':
+                ax.plot(df_graph['cycle'], df_graph[col], label=col, linestyle='dashed', linewidth=0.75)
+            else:
+                ax.plot(df_graph['cycle'], df_graph[col], label=col, linewidth=0.75)
     plt.xlabel('Cycles')
     plt.ylabel('RUL')
     plt.legend()
