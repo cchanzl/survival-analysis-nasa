@@ -206,18 +206,18 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
 
 
 # Estimate remaining useful life
-def evaluate_rsf(name, rsf, rsf_x, label):
-    surv = rsf.predict_survival_function(rsf_x[rsf_predict_cols], return_array=True)  # return S(t) for each data point
-    #print(surv)
-    rsf_rmst = []  # create a list to store the rmst of each survival curve
+def evaluate_rsf(name, model, rsf_x, label):
+    surv = model.predict_survival_function(rsf_x[rsf_predict_cols], return_array=True)  # return S(t) for each data point
+
+    rmst = []  # create a list to store the rmst of each survival curve
     # calculate rmst
 
     for i, s in enumerate(surv):
         df_s = pd.DataFrame(s)
-        df_s.set_index(rsf.event_times_, inplace=True)
+        df_s.set_index(model.event_times_, inplace=True)
         km_rmst = restricted_mean_survival_time(df_s, t=400)  # calculate restricted mean survival time
-        rsf_rmst.append(km_rmst)
-        np.set_printoptions(threshold=np.inf)
+        rmst.append(km_rmst)
+        # np.set_printoptions(threshold=np.inf)
         # if (i % 9) == 0:
         #    print(km_rmst)
         # plt.step(rsf.event_times_, s, where="post", label=str(i))
@@ -228,13 +228,11 @@ def evaluate_rsf(name, rsf, rsf_x, label):
     # plt.grid(True)
     # plt.show()
 
-    rsf_x['y_hat'] = rsf_rmst - rsf_x['cycle']
+    rsf_x['y_hat'] = rmst - rsf_x['cycle']
     rsf_x['y_hat'].where(rsf_x['y_hat'] >= 0, 0, inplace=True)
     rsf_x['y_hat'] = rsf_x['y_hat'].clip(upper=clip_level)
     result_interim = evaluate(name, rsf_x, label)
     return result_interim, rsf_x['y_hat']
-
-
 
 
 ################################
@@ -496,21 +494,21 @@ nn_x_train_scaled, nn_y_train, nn_x_val_scaled, nn_y_val = train_val_group_split
 filename = 'finalized_pretuned_NN_model.h5'
 if train_untuned_NN:
     # construct neural network
-    model = Sequential()
-    model.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
-    model.add(Dense(32, activation='relu'))
-    model.add(Dense(64, activation='relu'))
-    model.add(Dense(1))
-    model.compile(loss='mean_squared_error', optimizer='adam')
+    ct_untuned = Sequential()
+    ct_untuned.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
+    ct_untuned.add(Dense(32, activation='relu'))
+    ct_untuned.add(Dense(64, activation='relu'))
+    ct_untuned.add(Dense(1))
+    ct_untuned.compile(loss='mean_squared_error', optimizer='adam')
 
     epochs = 20
-    history = model.fit(nn_x_train_scaled[remaining_sensors], nn_y_train,
-                        validation_data=(nn_x_val_scaled[remaining_sensors], nn_y_val),
-                        epochs=epochs, verbose=0)
-    model.save(filename)  # save trained model
+    history = ct_untuned.fit(nn_x_train_scaled[remaining_sensors], nn_y_train,
+                             validation_data=(nn_x_val_scaled[remaining_sensors], nn_y_val),
+                             epochs=epochs, verbose=0)
+    ct_untuned.save(filename)  # save trained model
 
-model = load_model(filename)
-nn_x_val_scaled['y_hat'] = model.predict(nn_x_val_scaled[remaining_sensors])
+ct_untuned = load_model(filename)
+nn_x_val_scaled['y_hat'] = ct_untuned.predict(nn_x_val_scaled[remaining_sensors])
 nn_x_val_scaled['RUL'] = nn_y_val
 print("pre-tuned Neural Network")
 result = evaluate("NN (pre-tuned)", nn_x_val_scaled, 'train')
@@ -518,7 +516,7 @@ list_results.append(result)
 
 # nn_x_test_scaled = nn_x_test_scaled.drop(['cycle', 'RUL', 'start'], axis=1)
 df_result = test_clipped.copy()
-df_result['y_hat'] = model.predict(nn_x_test_scaled[remaining_sensors])
+df_result['y_hat'] = ct_untuned.predict(nn_x_test_scaled[remaining_sensors])
 result = evaluate("NN (pre-tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (pre-tuned)'] = df_result['y_hat']
@@ -533,7 +531,7 @@ if nn_hyperparameter_tune:
     dropouts = list(np.arange(0, 4 + 1, 0.5) / 10)
 
     # earlier testing revealed relu performed significantly worse, so I removed it from the options
-    activation_functions = ['tanh', 'sigmoid']
+    activation_functions = ['tanh', 'sigmoid', 'relu']
     batch_size_list = [16, 32, 64, 128, 256, 512]
 
     ITERATIONS = nn_n_Iterations
@@ -566,7 +564,7 @@ if nn_hyperparameter_tune:
                                               alpha=alpha)
         # create model
         input_dim = len(nn_x_train[remaining_sensors].columns)
-        model = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
+        ct_untuned = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
         # create train-validation split
         gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
         for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train, groups=train_clipped['unit num']):
@@ -576,11 +574,11 @@ if nn_hyperparameter_tune:
             y_val_split = nn_y_train.iloc[idx_val].copy()
 
             # train and evaluate model
-            model.compile(loss='mean_squared_error', optimizer='adam')
-            model.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
-            history = model.fit(X_train_split[remaining_sensors], y_train_split,
-                                validation_data=(X_val_split[remaining_sensors], y_val_split),
-                                epochs=epochs, batch_size=batch_size, verbose=0)
+            ct_untuned.compile(loss='mean_squared_error', optimizer='adam')
+            ct_untuned.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
+            history = ct_untuned.fit(X_train_split[remaining_sensors], y_train_split,
+                                     validation_data=(X_val_split[remaining_sensors], y_val_split),
+                                     epochs=epochs, batch_size=batch_size, verbose=0)
             mse.append(history.history['val_loss'][-1])
 
         # append results
@@ -591,12 +589,12 @@ if nn_hyperparameter_tune:
 
     results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
 
-alpha = 0.195
-epochs = 10
+alpha = 0.175
+epochs = 40
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
-nodes = [32, 64, 128]
+nodes = [128, 256, 512]
 dropout = 0.05
-activation = 'tanh'
+activation = 'sigmoid'
 batch_size = 16
 
 nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=train_clipped,
@@ -670,9 +668,6 @@ rsf = pickle.load(open(rsf_filename, 'rb'))
 result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, 'train')
 list_results.append(result)
 
-rsf_test_y = test_clipped[['breakdown', 'cycle', 'RUL']]
-rsf_test_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
-rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, 'test')
 list_results.append(result)
 graph_data['rsf (pre-tuned)'] = y_hat
@@ -721,9 +716,6 @@ rsf_tuned = pickle.load(open(rsf_filename, 'rb'))
 result, _ = evaluate_rsf("rsf (tuned)", rsf_tuned, rsf_x_val, 'train')
 list_results.append(result)
 
-rsf_test_y = test_clipped[['breakdown', 'cycle', 'RUL']]
-rsf_test_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
-rsf_test_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 result, y_hat = evaluate_rsf("rsf (tuned)", rsf_tuned, test_clipped, 'test')
 list_results.append(result)
 graph_data['rsf (tuned)'] = y_hat
@@ -733,82 +725,91 @@ graph_data['rsf (tuned)'] = y_hat
 ################################
 
 # https://jmlr.org/papers/volume20/18-424/18-424.pdf
-# print(delimiter)
-# print("Started CoxTime Method")
-#
-# np.random.seed(1234)
-# _ = torch.manual_seed(123)
-#
-# # Prepare data
-# ct_x_train, ct_y_train, ct_x_test = prep_data(x_train=train_clipped,
-#                                               y_train=train_clipped[['cycle', 'breakdown']],
-#                                               x_test=test_clipped,
-#                                               remaining_sensors=remaining_sensors,
-#                                               lags=[],
-#                                               alpha=0.195)
-# # create train-validation split
-# input_dim = len(ct_x_train[remaining_sensors].columns)
-# gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
-# for idx_train, idx_val in gss_search.split(ct_x_train, ct_y_train, groups=train_clipped['unit num']):
-#     ct_X_train_split = ct_x_train.iloc[idx_train].copy()
-#     ct_y_train_split = ct_y_train.iloc[idx_train].copy()
-#     ct_X_val_split = ct_x_train.iloc[idx_val].copy()
-#     ct_y_val_split = ct_y_train.iloc[idx_val].copy()
-#
-# labtrans = CoxTime.label_transform()
-# get_target = lambda df: (df['cycle'].values.astype('float32'), df['breakdown'].values.astype('float32'))
-# ct_y_train_split_tuple = labtrans.fit_transform(*get_target(ct_y_train_split))
-# ct_y_val_split_tuple = labtrans.transform(*get_target(ct_y_val_split))
-# val = tt.tuplefy(ct_X_val_split[remaining_sensors].to_numpy().astype('float32'), ct_y_val_split_tuple)
-#
-# # Prepare model
-# in_features = ct_X_train_split[remaining_sensors].shape[1]
-# num_nodes = [32, 32]
-# batch_norm = True
-# dropout = 0.1
-# batch_size = 256
-#
-# net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
-# model = CoxTime(net, tt.optim.Adam, labtrans=labtrans)  # set labtrans to get back the correct time scale in output
-#
-# lrfinder = model.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
-#                            ct_y_train_split_tuple, batch_size, tolerance=2)
-# _ = lrfinder.plot()
-# # plt.show()
-#
-# print("The best learning rate is: ", str(lrfinder.get_best_lr()))
-#
-# model.optimizer.set_lr(lrfinder.get_best_lr())
-#
-# log = model.fit(ct_X_train_split[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
-#                 batch_size,
-#                 epochs=512,
-#                 callbacks=[tt.callbacks.EarlyStopping()],
-#                 verbose=True,
-#                 val_data=val.repeat(10).cat())
-# _ = log.plot()
-# # plt.show()
-#
-# print(model.partial_log_likelihood(*val).mean())
-# _ = model.compute_baseline_hazards()
-# surv = model.predict_surv_df(ct_x_test[remaining_sensors].to_numpy().astype('float32'))
-#
-# print(test_clipped.shape)
-# print(surv)
-# surv.iloc[:, 51].plot()
-# surv.iloc[:, 500].plot()
-# plt.ylabel('S(t | x)')
-# _ = plt.xlabel('Time')
+# https://scikit-survival.readthedocs.io/en/stable/user_guide/random-survival-forest.html
+
+print(delimiter)
+print("Started CoxTime Method")
+
+np.random.seed(1234)
+_ = torch.manual_seed(123)
+
+# Prepare data
+ct_x = rsf_x.copy()
+ct_y = rsf_y.copy()
+
+ct_x_scaled, ct_test_scaled = minmax_scaler(ct_x, test_clipped, remaining_sensors)
+
+ct_x_train, ct_x_val, ct_y_train, ct_y_val = train_test_split(ct_x_scaled, ct_y, test_size=0.25, random_state=7)
+
+labtrans = CoxTime.label_transform()
+get_target = lambda df: (df['cycle'].values.astype('float32'), df['breakdown'].values.astype('float32'))
+ct_y_train_split_tuple = labtrans.fit_transform(*get_target(ct_y_train))
+ct_y_val_split_tuple = labtrans.transform(*get_target(ct_y_val))
+val = tt.tuplefy(ct_x_val[remaining_sensors].to_numpy().astype('float32'), ct_y_val_split_tuple)
+
+# Prepare model
+in_features = ct_x_train[remaining_sensors].shape[1]
+num_nodes = [32, 32]
+batch_norm = True
+dropout = 0.1
+batch_size = 256
+
+net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
+ct_untuned = CoxTime(net, tt.optim.Adam, labtrans=labtrans)  # set labtrans to get back the correct time scale in output
+
+lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
+                                ct_y_train_split_tuple, batch_size, tolerance=2)
+_ = lrfinder.plot()
 # plt.show()
 
-# # rsf_rmst = []  # create a list to store the rmst of each survival curve
-# #
-# # for i, s in enumerate(surv):
-# # # calculate rmst
-# #     df_s = pd.DataFrame(s)
-# #     df_s.set_index(rsf.event_times_, inplace=True)
-# #     km_rmst = restricted_mean_survival_time(df_s, t=rmst_upper_bound)  # calculate restricted mean survival time
-# #     rsf_rmst.append(km_rmst)
+print("The best learning rate is: ", str(lrfinder.get_best_lr()))
+
+ct_untuned.optimizer.set_lr(lrfinder.get_best_lr())
+
+log = ct_untuned.fit(ct_x_train[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
+                     batch_size,
+                     epochs=512,
+                     callbacks=[tt.callbacks.EarlyStopping()],
+                     verbose=True,
+                     val_data=val.repeat(10).cat())
+_ = log.plot()
+plt.show()
+
+print(ct_untuned.partial_log_likelihood(*val).mean())
+_ = ct_untuned.compute_baseline_hazards()
+surv = ct_untuned.predict_surv_df(ct_x_val[remaining_sensors].to_numpy().astype('float32'))
+
+# print(test_clipped.shape)
+# print(surv)
+surv.iloc[:, :20].plot()
+plt.ylabel('S(t | x)')
+_ = plt.xlabel('Time')
+plt.show()
+
+ct_rmst = []  # create a list to store the rmst of each survival curve
+for col in surv:
+    km_rmst = restricted_mean_survival_time(surv[col].to_frame(), t=400)  # calculate restricted mean survival time
+    ct_rmst.append(km_rmst)
+
+ct_x_val['y_hat'] = ct_rmst - ct_x_val['cycle']
+ct_x_val['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
+ct_x_val['y_hat'] = ct_x_val['y_hat'].clip(upper=clip_level)
+result = evaluate("ct (untuned)", ct_x_val, 'train')
+list_results.append(result)
+
+surv = ct_untuned.predict_surv_df(ct_test_scaled[remaining_sensors].to_numpy().astype('float32'))
+
+ct_rmst = []  # create a list to store the rmst of each survival curve
+for col in surv:
+    km_rmst = restricted_mean_survival_time(surv[col].to_frame(), t=400)  # calculate restricted mean survival time
+    ct_rmst.append(km_rmst)
+
+ct_test_scaled['y_hat'] = ct_rmst - ct_test_scaled['cycle']
+ct_test_scaled['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
+ct_test_scaled['y_hat'] = ct_test_scaled['y_hat'].clip(upper=clip_level)
+result = evaluate("ct (untuned)", ct_test_scaled, 'test')
+list_results.append(result)
+graph_data["ct (untuned)"] = y_hat
 
 ################################
 #   Save results of each model
