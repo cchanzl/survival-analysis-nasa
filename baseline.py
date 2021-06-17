@@ -31,6 +31,7 @@ from pycox.models.cox_time import MLPVanillaCoxTime
 from pycox.evaluation import EvalSurv
 import torch
 import torchtuples as tt
+from FL_data_splitter import minmax_scaler, clip_level, remaining_sensors
 
 ##########################
 #   Loading Data
@@ -43,31 +44,23 @@ for i in range(0, 26):
     name = name + str(i + 1)
     header.append(name)
 
-full_path = "Dataset/"
-y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
-df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
-x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
+full_path = "Dataset/processed/"
+train_org = pd.read_csv(full_path + 'train_org.csv')
+test_org = pd.read_csv(full_path + 'test_org.csv')
+train_clipped = pd.read_csv(full_path + 'train_clipped.csv')
+test_clipped = pd.read_csv(full_path + 'test_clipped.csv')
+
+# create df to append y_hat and y_pred for graph plotting
+graph_data = test_clipped.copy()
+
+# create df to append result of each model
+evaluation_metrics = ["RMSE", "CI_SK", "R2"]
+results_header = ["model_name", "train_test"] + evaluation_metrics
+list_results = []
 
 ##########################
 #   Helper Functions
 ##########################
-
-def add_remaining_useful_life(df):
-    # Get the total number of cycles for each unit
-    grouped_by_unit = df.groupby(by="unit num")
-    max_cycle = grouped_by_unit["cycle"].max()
-
-    # Merge the max cycle back into the original frame
-    result_frame = df.merge(max_cycle.to_frame(name='max_cycle'), left_on='unit num', right_index=True)
-
-    # Calculate remaining useful life for each row
-    remaining_useful_life = result_frame["max_cycle"] - result_frame["cycle"]
-    result_frame["RUL"] = remaining_useful_life
-
-    # drop max_cycle as it's no longer needed
-    result_frame = result_frame.drop("max_cycle", axis=1)
-    return result_frame
-
 
 def evaluate(model, df_result, label='test'):
     """ Evaluates model output on rmse, R2 and C-Index
@@ -144,22 +137,6 @@ def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file):
     model.compile(loss='mean_squared_error', optimizer='adam')
     model.save_weights(weights_file)
     return model
-
-
-def minmax_scaler(df_train, df_test, sensor_names):
-    scaler = MinMaxScaler()
-    scaler.fit(df_train[sensor_names])
-
-    # scale train set
-    df_train_scaled = df_train.copy()
-    df_train_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_train[sensor_names]),
-                                                 columns=sensor_names, index=df_train_scaled.index)
-    # scale test set
-    df_test_scaled = df_test.copy()
-    df_test_scaled[sensor_names] = pd.DataFrame(scaler.transform(df_test[sensor_names]),
-                                                columns=sensor_names,
-                                                index=df_test_scaled.index)
-    return df_train_scaled, df_test_scaled
 
 
 def add_specific_lags(df_input, list_of_lags, columns):
@@ -243,13 +220,6 @@ def evaluate_rsf(name, model, rsf_x, label):
 # kaplan-meier and rsf is highly sensitive to this as they use this to integrate S(t)
 rmst_upper_bound = 200
 
-# clip RUL if above a certain level to improve training
-clip_level = 150
-
-# set if pseudo right censoring be performed on dataset at designated cut-off
-right_censoring = True
-cut_off = 200
-
 # to re-train untuned baseline NN?
 train_untuned_NN = False
 
@@ -268,71 +238,6 @@ train_tuned_rsf = False
 
 # If graph should be displayed at the end
 show_graph = True
-
-################################
-#   General Data pre-processing
-################################
-
-print(delimiter)
-print("Started data preprocessing")
-
-# Sensors selected based on MannKendall, sensor 2, 3, 4, 7, 8, 11, 12, 13, 15, 17, 20 and 21 are selected
-drop_sensors = ['sens1', 'sens5', 'sens6', 'sens9', 'sens10', 'sens14',
-                'sens16', 'sens18', 'sens19', 'sens22', 'sens23', 'sens24', 'sens25', 'sens26']
-
-drop_labels = drop_sensors + ["op1", "op2", "op3"]
-
-remaining_sensors = ['sens2', 'sens3', 'sens4', 'sens7', 'sens8', 'sens11',
-                     'sens12', 'sens13', 'sens15', 'sens17', 'sens20', 'sens21']
-
-all_sensors = drop_sensors + remaining_sensors
-
-# add RUL column
-train_org = add_remaining_useful_life(df_train_001)
-test_org = x_test_org.copy()
-y_test.rename(columns={0: 'RUL'}, inplace=True)
-y_test['unit num'] = [i for i in range(1, 101)]
-y_test['max_cycle'] = y_test['RUL'] + test_org.groupby('unit num').last().reset_index(drop=True)['cycle']
-test_org = pd.merge(test_org, y_test, on='unit num', how='left')
-test_org['RUL'] = test_org['max_cycle'] - test_org['cycle']
-# with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-#    print(test_org[['unit num', 'cycle', 'RUL', 'max_cycle']])
-test_org.drop(['max_cycle'], axis=1, inplace=True)
-
-# drop non-informative sensors and operational settings
-train_org.drop(labels=drop_labels, axis=1, inplace=True)
-test_org.drop(labels=drop_labels, axis=1, inplace=True)
-test_org.drop([1], axis=1, inplace=True)
-
-# add event indicator 'breakdown' column
-train_org['breakdown'] = 0
-idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-train_org.at[idx_last_record, 'breakdown'] = 1
-test_org['breakdown'] = 0
-idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-test_org.at[idx_last_record, 'breakdown'] = 1
-
-# Add start cycle column (only required for Cox model)
-train_org['start'] = train_org['cycle'] - 1
-test_org['start'] = test_org['cycle'] - 1
-
-# apply a floor to RUL in training data. 125 is selected as the min cycle is 128. See EDA.
-train_clipped = train_org.copy()
-train_clipped['RUL'] = train_clipped['RUL'].clip(upper=clip_level)
-test_clipped = test_org.copy()
-test_clipped['RUL'] = test_clipped['RUL'].clip(upper=clip_level)
-
-# Apply psuedo right censoring in training data. Important to improve accuracy and simulate right censoring
-if right_censoring:
-    train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
-
-# create df to append result of each model
-evaluation_metrics = ["RMSE", "CI_SK", "R2"]
-results_header = ["model_name", "train_test"] + evaluation_metrics
-list_results = []
-
-# create df to append y_hat and y_pred for graph plotting
-graph_data = test_clipped.copy()
 
 ################################
 #   Kaplan-Meier Curve
