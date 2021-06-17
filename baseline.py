@@ -264,7 +264,7 @@ train_untuned_rsf = True
 # to perform hyperparameter search for rsf?
 rsf_hyperparameter_tune = False
 rsf_n_Iterations = 500
-train_tuned_rsf = True
+train_tuned_rsf = False
 
 # If graph should be displayed at the end
 show_graph = True
