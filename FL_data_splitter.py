@@ -92,6 +92,13 @@ def fl_data_splitter(split, train, filename):
         save_data_file(temp_df, filename[i], True)
 
 
+def file_name_generator(split_points, listname, listtype="train"):
+    number_of_parties = len(split_points) + 1
+    for i in range(0, number_of_parties):
+        filename = "party_" + chr(65+i) + "_" + listtype
+        listname.append(filename)
+
+
 ##########################
 #   Loading Data
 ##########################
@@ -196,8 +203,11 @@ train_split_points = [40, 80]
 test_split_points = [40, 80]
 no_of_parties = len(train_split_points) + 1  # number of parties in the FL
 
-train_file_names = ["party_A_train", "party_B_train", "party_C_train"]
-test_file_names = ["party_A_test", "party_B_test", "party_C_test"]
+train_file_names = []
+test_file_names = []
+
+file_name_generator(train_split_points, train_file_names, "train")
+file_name_generator(test_split_points, test_file_names, "test")
 
 minmax_scale = True
 train_no_rows = len(train_clipped)
