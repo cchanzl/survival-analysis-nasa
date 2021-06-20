@@ -58,6 +58,7 @@ evaluation_metrics = ["RMSE", "CI_SK", "R2"]
 results_header = ["model_name", "train_test"] + evaluation_metrics
 list_results = []
 
+
 ##########################
 #   Helper Functions
 ##########################
@@ -183,8 +184,13 @@ def prep_data(x_train, y_train, x_test, remaining_sensors, lags, alpha, n=0):
 
 
 # Estimate remaining useful life
-def evaluate_rsf(name, model, rsf_x, label):
-    surv = model.predict_survival_function(rsf_x[rsf_predict_cols], return_array=True)  # return S(t) for each data point
+def evaluate_rsf(name, model, x_data, label, rmst_upper=400):
+    surv = model.predict_survival_function(x_data[rsf_predict_cols],
+                                           return_array=True)  # return S(t) for each data point
+    if label == "test":
+        x_data_ = x_data.reset_index().groupby(by='unit num').last()
+        surv = model.predict_survival_function(x_data_[rsf_predict_cols],
+                                               return_array=True)  # return S(t) for each data point
 
     rmst = []  # create a list to store the rmst of each survival curve
     # calculate rmst
@@ -192,24 +198,33 @@ def evaluate_rsf(name, model, rsf_x, label):
     for i, s in enumerate(surv):
         df_s = pd.DataFrame(s)
         df_s.set_index(model.event_times_, inplace=True)
-        km_rmst = restricted_mean_survival_time(df_s, t=400)  # calculate restricted mean survival time
-        rmst.append(km_rmst)
-        # np.set_printoptions(threshold=np.inf)
-        # if (i % 9) == 0:
-        #    print(km_rmst)
-        # plt.step(rsf.event_times_, s, where="post", label=str(i))
-
+        model_RMST = restricted_mean_survival_time(df_s, t=rmst_upper)  # calculate restricted mean survival time
+        rmst.append(model_RMST)
+    #     np.set_printoptions(threshold=np.inf)
+    #     if (i % 9) == 0:
+    #        print(km_rmst)
+    #     plt.step(rsf.event_times_, s, where="post", label=str(i))
+    #
     # plt.ylabel("Survival probability")
     # plt.xlabel("Time in cycles")
     # plt.legend()
     # plt.grid(True)
     # plt.show()
 
-    rsf_x['y_hat'] = rmst - rsf_x['cycle']
-    rsf_x['y_hat'].where(rsf_x['y_hat'] >= 0, 0, inplace=True)
-    rsf_x['y_hat'] = rsf_x['y_hat'].clip(upper=clip_level)
-    result_interim = evaluate(name, rsf_x, label)
-    return result_interim, rsf_x['y_hat']
+    if label == "test":
+        x_data['y_hat'] = -1
+        for unit in range(0, x_data['unit num'].nunique()):
+            mask = (x_data['unit num'] == unit+1)
+            pred_rmst = rmst[unit]
+            x_data.loc[mask, 'y_hat'] = pred_rmst - x_data['cycle']
+
+    else:
+        x_data['y_hat'] = rmst - x_data['cycle']
+
+    x_data['y_hat'].where(x_data['y_hat'] >= 0, 0, inplace=True)
+    x_data['y_hat'] = x_data['y_hat'].clip(upper=clip_level)
+    result_interim = evaluate(name, x_data, label)
+    return result_interim, x_data['y_hat']
 
 
 ################################
@@ -218,7 +233,7 @@ def evaluate_rsf(name, model, rsf_x, label):
 
 # set upper bound to integrate survival function to find RMST
 # kaplan-meier and rsf is highly sensitive to this as they use this to integrate S(t)
-rmst_upper_bound = 200
+rmst_upper_bound = 400
 
 # to re-train untuned baseline NN?
 train_untuned_NN = False
@@ -233,8 +248,11 @@ train_untuned_rsf = True
 
 # to perform hyperparameter search for rsf?
 rsf_hyperparameter_tune = False
-rsf_n_Iterations = 500
-train_tuned_rsf = False
+rsf_n_Iterations = 10  # Number of parameter settings sampled
+train_tuned_rsf = True
+
+# to re-train untuned cox-time
+train_untuned_ct = True
 
 # If graph should be displayed at the end
 show_graph = True
@@ -262,7 +280,7 @@ kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 # plt.close()
 
 # estimate restricted mean survival time from KM curve
-km_rmst = restricted_mean_survival_time(kaplanMeier, t=rmst_upper_bound)
+km_rmst = restricted_mean_survival_time(kaplanMeier, t=220)
 df_result = train_clipped.copy()
 df_result['km_rmst'] = km_rmst
 km_rmst_arr = [km_rmst for x in range(len(df_result))]
@@ -545,21 +563,29 @@ print(delimiter)
 print("Started Random Survival Forest")
 
 # Data preparation
-# rsf_x = train_clipped.copy()  # cannot use clip as we need the last RUL of the engine to train the model
+# cannot use train_clipped as this data is right censored. Hence, last data point of some engines
+# is not the breakdown and we need the last RUL of the engine to train the model
 rsf_x = train_org.copy()  # hence we are using train_org
+# filter for engines that have broken down
 rsf_x = rsf_x.reset_index().groupby(by='unit num').last()
-breakdown_0 = train_org.copy()
-breakdown_0 = breakdown_0.loc[breakdown_0['breakdown'] == 0]
-breakdown_0 = breakdown_0.sample(n=300)
-rsf_x.append(breakdown_0, ignore_index=True)  # mix of breakdown and non-breakdown
+
+# add a balanced mix of engines that have not broken down
+# breakdown_0 = train_org.copy()
+# breakdown_0 = breakdown_0.loc[breakdown_0['breakdown'] == 0]
+# breakdown_0 = breakdown_0.sample(n=100)
+# rsf_x = rsf_x.append(breakdown_0, ignore_index=True)  # mix of breakdown and non-breakdown
 rsf_x['RUL'] = rsf_x['RUL'].clip(upper=clip_level)
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
+import xlwt
+rsf_x.to_excel("test.xlsx", index=False)
 
 rsf_y = rsf_x[['breakdown', 'cycle']]
 rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
 rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
-rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25, random_state=7)
-
+rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25,
+                                                                  stratify=rsf_y['breakdown'],
+                                                                  random_state=7)
+rsf_x_val.to_excel("rsf_x_val.xlsx", index=False)
 # Training RSF
 print("Predicting rsf")
 rsf_filename = 'finalized_untuned_rsf_model_incl_cycle.sav'
@@ -580,11 +606,11 @@ graph_data['rsf (pre-tuned)'] = y_hat
 # Hyperparameter tuning RSF
 if rsf_hyperparameter_tune:
     # Number of trees in random forest
-    n_estimators = [int(x) for x in np.linspace(start=50, stop=150, num=5)]
+    n_estimators = [int(x) for x in np.linspace(start=50, stop=1500, num=5)]
     # Maximum number of levels in tree
-    max_depth = [int(x) for x in np.linspace(10, 120, num=10)]
+    max_depth = [int(x) for x in np.linspace(10, 1200, num=10)]
     # Number of features to consider at every split
-    max_features = ['auto', 'sqrt']
+    max_features = ['auto', 'sqrt', 'log2']
     # Minimum number of samples required to split a node
     min_samples_split = [int(x) for x in np.linspace(start=5, stop=30, num=1)]
     # Minimum number of samples required at each leaf node
@@ -596,20 +622,43 @@ if rsf_hyperparameter_tune:
                    'max_depth': max_depth,
                    'min_samples_split': min_samples_split,
                    'min_samples_leaf': min_samples_leaf}
-    # print(random_grid)
 
     # perform random search
-    rsf = RandomSurvivalForest()
-    rsf_random = RandomizedSearchCV(estimator=rsf,
+    rsf_new = RandomSurvivalForest()
+    rsf_random = RandomizedSearchCV(estimator=rsf_new,
                                     param_distributions=random_grid,
-                                    n_iter=rsf_n_Iterations,
-                                    cv=5,
+                                    n_iter=rsf_n_Iterations,  # Number of parameter settings sampled
+                                    cv=10,
                                     verbose=10,
                                     random_state=5,
                                     n_jobs=-1)
     # Fit the random search model
-    rsf_random.fit(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y))
+    rsf_random.fit(rsf_x[rsf_predict_cols], Surv.from_dataframe('breakdown', 'cycle', rsf_y))
     print(rsf_random.best_params_)
+
+# rsf_grid_search = True
+# if rsf_grid_search:
+#     # now that we know the best hyperparameter, we perform a proper grid search
+#     # Create the parameter grid based on the results of random search
+#     param_grid = {
+#         'bootstrap': [True],
+#         'max_depth': [100, 110, 120, 130],
+#         'min_samples_leaf': [3, 4, 5, 6 ,7],
+#         'min_samples_split': [3, 4, 5, 6 ,7],
+#         'n_estimators': [130, 140, 150, 160, 170]
+#     }
+#
+#     # Create a based model
+#     rsf = RandomSurvivalForest()
+#
+#     # Instantiate the grid search model
+#     from sklearn.model_selection import GridSearchCV
+#     grid_search = GridSearchCV(estimator=rsf, param_grid=param_grid,
+#                                cv=3, n_jobs=-1, verbose=2)
+#
+#     # Fit the grid search to the data
+#     grid_search.fit(rsf_x[remaining_sensors], Surv.from_dataframe('breakdown', 'cycle', rsf_y))
+#     print(grid_search.best_params_)
 
 print("done with tuning, start training")
 rsf_filename = 'finalized_tuned_rsf_model.sav'
@@ -639,12 +688,13 @@ np.random.seed(1234)
 _ = torch.manual_seed(123)
 
 # Prepare data
-ct_x = rsf_x.copy()
+ct_x = rsf_x.copy()  # already grouped by unit num
 ct_y = rsf_y.copy()
 
 ct_x_scaled, ct_test_scaled = minmax_scaler(ct_x, test_clipped, remaining_sensors)
-
-ct_x_train, ct_x_val, ct_y_train, ct_y_val = train_test_split(ct_x_scaled, ct_y, test_size=0.25, random_state=7)
+gss = GroupShuffleSplit(n_splits=1, train_size=0.80, random_state=42)
+ct_x_train, ct_x_val, ct_y_train, ct_y_val = train_test_split(ct_x_scaled, ct_y,
+                                                              test_size=0.25, random_state=7)
 
 labtrans = CoxTime.label_transform()
 get_target = lambda df: (df['cycle'].values.astype('float32'), df['breakdown'].values.astype('float32'))
@@ -653,30 +703,34 @@ ct_y_val_split_tuple = labtrans.transform(*get_target(ct_y_val))
 val = tt.tuplefy(ct_x_val[remaining_sensors].to_numpy().astype('float32'), ct_y_val_split_tuple)
 
 # Prepare model
-in_features = ct_x_train[remaining_sensors].shape[1]
-num_nodes = [32, 32]
-batch_norm = True
-dropout = 0.1
-batch_size = 256
+ct_untuned_filename = 'finalized_untuned_ct_model.h5'
+if train_untuned_ct:
+    in_features = ct_x_train[remaining_sensors].shape[1]
+    num_nodes = [32, 32]
+    batch_norm = True
+    dropout = 0.1
+    batch_size = 256
 
-net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
-ct_untuned = CoxTime(net, tt.optim.Adam, labtrans=labtrans)  # set labtrans to get back the correct time scale in output
+    net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
+    ct_untuned = CoxTime(net, tt.optim.Adam, labtrans=labtrans)  # set labtrans to get back the correct time scale in output
 
-lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
-                                ct_y_train_split_tuple, batch_size, tolerance=2)
-_ = lrfinder.plot()
-# plt.show()
+    lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
+                                    ct_y_train_split_tuple, batch_size, tolerance=2)
+    _ = lrfinder.plot()
+    # plt.show()
 
-print("The best learning rate is: ", str(lrfinder.get_best_lr()))
+    print("The best learning rate is: ", str(lrfinder.get_best_lr()))
 
-ct_untuned.optimizer.set_lr(lrfinder.get_best_lr())
+    ct_untuned.optimizer.set_lr(lrfinder.get_best_lr())
 
-log = ct_untuned.fit(ct_x_train[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
-                     batch_size,
-                     epochs=512,
-                     callbacks=[tt.callbacks.EarlyStopping()],
-                     verbose=True,
-                     val_data=val.repeat(10).cat())
+    log = ct_untuned.fit(ct_x_train[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
+                         batch_size,
+                         epochs=512,
+                         callbacks=[tt.callbacks.EarlyStopping()],
+                         verbose=True,
+                         val_data=val.repeat(10).cat())
+#     pickle.dump(log, open(ct_untuned_filename, 'wb'))
+# ct_untuned = pickle.load(open(ct_untuned_filename, 'rb'))
 _ = log.plot()
 plt.show()
 
@@ -698,7 +752,6 @@ for col in surv:
 
 ct_x_val['y_hat'] = ct_rmst - ct_x_val['cycle']
 ct_x_val['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
-ct_x_val['y_hat'] = ct_x_val['y_hat'].clip(upper=clip_level)
 result = evaluate("ct (untuned)", ct_x_val, 'train')
 list_results.append(result)
 
@@ -711,10 +764,34 @@ for col in surv:
 
 ct_test_scaled['y_hat'] = ct_rmst - ct_test_scaled['cycle']
 ct_test_scaled['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
-ct_test_scaled['y_hat'] = ct_test_scaled['y_hat'].clip(upper=clip_level)
 result = evaluate("ct (untuned)", ct_test_scaled, 'test')
+ct_test_scaled['y_hat'] = ct_test_scaled['y_hat'].clip(upper=clip_level)
 list_results.append(result)
-graph_data["ct (untuned)"] = y_hat
+graph_data["ct (untuned)"] = ct_test_scaled['y_hat']
+
+# Hyperparameter tuning Cox-Time
+# ct_hyperparameter_tune = True
+# if ct_hyperparameter_tune:
+#     # Number of trees in random forest
+#     n_estimators = [int(x) for x in np.linspace(start=50, stop=150, num=5)]
+#     # Maximum number of levels in tree
+#     max_depth = [int(x) for x in np.linspace(10, 120, num=10)]
+#     # Number of features to consider at every split
+#     max_features = ['auto', 'sqrt']
+#     # Minimum number of samples required to split a node
+#     min_samples_split = [int(x) for x in np.linspace(start=5, stop=30, num=1)]
+#     # Minimum number of samples required at each leaf node
+#     min_samples_leaf = [int(x) for x in np.linspace(start=5, stop=30, num=1)]
+#
+#     # Create the random grid
+#     random_grid = {'n_estimators': n_estimators,
+#                    'max_features': max_features,
+#                    'max_depth': max_depth,
+#                    'min_samples_split': min_samples_split,
+#                    'min_samples_leaf': min_samples_leaf}
+#
+#     # perform random search
+#     rsf = RandomSurvivalForest()
 
 ################################
 #   Save results of each model
@@ -738,8 +815,8 @@ with pd.option_context('display.max_rows', None, 'display.max_columns', None):
 
 # save file
 full_path = "results/"
-filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv"
-df_results.to_csv(filename, index=False, sep='\t')
+filename = full_path + "saved_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".xlsx"
+df_results.to_excel(filename, index=False)
 graph_data.to_csv("graphing.csv", index=False)
 
 # show graph
