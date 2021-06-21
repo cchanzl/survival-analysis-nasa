@@ -1,6 +1,8 @@
 import sys
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from numpy.polynomial import Polynomial
 
 ##########################
 #   Helper Functions
@@ -34,6 +36,40 @@ def save_data_file(df, filename, FL=False):
     print("Saved ", filename, " successfully!")
 
 
+def polynomial_fitting(df_train, df_test, sensor_names, deg=3):
+    # copy the dataframe
+    df_poly_train = df_train.copy()
+    df_poly_test = df_test.copy()
+
+    # apply polynomial fitting
+    for i in df_poly_train['unit num'].unique():
+        df_train_unit = df_train[df_train['unit num'] == i]
+        df_test_unit = df_test[df_test['unit num'] == i]
+        for column in sensor_names:
+            train_p = np.poly1d(np.polyfit(df_train_unit['cycle'], df_train_unit[column], deg))
+            test_p = np.poly1d(np.polyfit(df_test_unit['cycle'], df_test_unit[column], deg))
+
+            df_poly_train.loc[df_poly_train['unit num'] == i, column] = train_p(range(0, len(df_train_unit[column])))
+            df_poly_test.loc[df_poly_test['unit num'] == i, column] = test_p(range(0, len(df_test_unit[column])))
+
+    return df_poly_train, df_poly_test
+
+
+def z_score_scaler(df_train, df_test, sensor_names):
+    # copy the dataframe
+    df_std_train = df_train.copy()
+    df_std_test = df_test.copy()
+    # apply the z-score method to each sensor data for each engine
+    for i in df_std_train['unit num'].unique():
+        df_train_unit = df_train[df_train['unit num'] == i]
+        df_test_unit = df_test[df_test['unit num'] == i]
+        for column in sensor_names:
+            df_std_train.loc[df_std_train['unit num'] == i, column] = (df_train_unit[column] - df_train_unit[column].mean()) / df_train_unit[column].std()
+            df_std_test.loc[df_std_test['unit num'] == i, column] = (df_test_unit[column] - df_test_unit[column].mean()) / df_test_unit[column].std()
+
+    return df_std_train, df_std_test
+
+
 def minmax_scaler(df_train, df_test, sensor_names):
     scaler = MinMaxScaler()
     scaler.fit(df_train[sensor_names])
@@ -57,7 +93,7 @@ def make_single_id(df):
 
 def rename_cols(df):
     new_header = ["id", "y"]
-    for i in range(0, len(df.columns)-len(new_header)):
+    for i in range(0, len(df.columns) - len(new_header)):
         temp_name = "x"
         temp_name = temp_name + str(i)
         new_header.append(temp_name)
@@ -82,20 +118,20 @@ def fl_data_splitter(split, train, filename):
     train = rename_cols(train)
 
     # split and save
-    for i in range(0, len(split)+1):
+    for i in range(0, len(split) + 1):
         if i == 0:  # first cut
             temp_df = train.loc[(train["id"] < (split[i] + 1) * 1000)]
         elif i == len(split):  # last cut
-            temp_df = train.loc[(train["id"] >= (split[i-1] + 1) * 1000)]
+            temp_df = train.loc[(train["id"] >= (split[i - 1] + 1) * 1000)]
         else:  # middle splits
-            temp_df = train.loc[(train["id"] >= (split[i])*1000) & (train["id"] < (split[i]+1)*1000)]
+            temp_df = train.loc[(train["id"] >= (split[i]) * 1000) & (train["id"] < (split[i] + 1) * 1000)]
         save_data_file(temp_df, filename[i], True)
 
 
 def file_name_generator(split_points, listname, listtype="train"):
     number_of_parties = len(split_points) + 1
     for i in range(0, number_of_parties):
-        filename = "party_" + chr(65+i) + "_" + listtype
+        filename = "party_" + chr(65 + i) + "_" + listtype
         listname.append(filename)
 
 
@@ -188,7 +224,6 @@ if right_censoring:
 save_data_file(train_clipped, "train_clipped")
 save_data_file(test_clipped, "test_clipped")
 
-
 ##########################################
 #   Data Preparation for FL Training
 ##########################################
@@ -228,3 +263,34 @@ if minmax_scale:
 # split and save files
 fl_data_splitter(train_split_points, train_clipped, train_file_names)
 fl_data_splitter(test_split_points, test_clipped, test_file_names)
+
+##########################################
+#   Data Preparation for RUL-RF
+##########################################
+
+# https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
+# feature engineering in line with this paper
+
+rul_rf_train = train_org.copy()
+rul_rf_test = test_org.copy()
+
+# apply z-score normalisation
+rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
+
+# apply polynomial fitting
+rul_rf_train_std_poly, rul_rf_test_std_poly = polynomial_fitting(rul_rf_train_std, rul_rf_test_std, remaining_sensors)
+
+save_data_file(rul_rf_train_std, "rul_rf_train_std")
+save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
+
+# plot line graph
+col = 'sens8'
+unit = 1
+plt.plot(rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, 'cycle'],
+         rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, col])
+plt.plot(rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, 'cycle'],
+         rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, col])
+plt.title(col)
+plt.xlabel('cycle')
+plt.ylabel('normalised sensor reading')
+plt.show()

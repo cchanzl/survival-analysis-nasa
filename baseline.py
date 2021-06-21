@@ -223,8 +223,7 @@ def evaluate_rsf(name, model, x_data, label, rmst_upper=400):
         x_data['y_hat'] = -1
         for unit in range(0, x_data['unit num'].nunique()):
             mask = (x_data['unit num'] == unit + 1)
-            pred_rmst = rmst[unit]
-            x_data.loc[mask, 'y_hat'] = pred_rmst - x_data['cycle']
+            x_data.loc[mask, 'y_hat'] = rmst[unit] - x_data['cycle']
 
     else:
         x_data['y_hat'] = rmst - x_data['cycle']
