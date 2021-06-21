@@ -116,7 +116,7 @@ df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=h
 x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
 ################################
-#   Data Settins
+#   Data Settings
 ################################
 
 # clip RUL if above a certain level to improve training

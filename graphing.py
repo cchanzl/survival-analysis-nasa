@@ -26,7 +26,7 @@ def make_graph(selected_unit_num):
                 ax.plot(df_graph['cycle'], df_graph[col], label=col, linestyle='dashed', linewidth=0.75)
             else:
                 ax.plot(df_graph['cycle'], df_graph[col], label=col, linewidth=0.75)
-    fig.legend(models, loc='best',
+    fig.legend(models, loc='lower center',
                ncol=len(models), bbox_transform=fig.transFigure)
     plt.xlabel('Cycles')
     plt.ylabel('RUL')

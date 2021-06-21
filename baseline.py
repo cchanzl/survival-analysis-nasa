@@ -31,7 +31,7 @@ from pycox.models.cox_time import MLPVanillaCoxTime
 from pycox.evaluation import EvalSurv
 import torch
 import torchtuples as tt
-from FL_data_splitter import minmax_scaler, clip_level, remaining_sensors
+from data_adjustment import minmax_scaler, clip_level, remaining_sensors
 
 ##########################
 #   Loading Data
@@ -54,7 +54,7 @@ test_clipped = pd.read_csv(full_path + 'test_clipped.csv')
 graph_data = test_clipped.copy()
 
 # create df to append result of each model
-evaluation_metrics = ["RMSE", "CI_SK", "R2"]
+evaluation_metrics = ["RMSE", "Score", "CI_SK", "R2"]
 results_header = ["model_name", "train_test"] + evaluation_metrics
 list_results = []
 
@@ -62,6 +62,18 @@ list_results = []
 ##########################
 #   Helper Functions
 ##########################
+
+
+def nasaScore(RUL_true, RUL_hat):
+    d = RUL_hat - RUL_true
+    score = 0
+    for i in d:
+        if i >= 0:
+            score += np.math.exp(i / 13) - 1
+        else:
+            score += np.math.exp(- i / 10) - 1
+    return score
+
 
 def evaluate(model, df_result, label='test'):
     """ Evaluates model output on rmse, R2 and C-Index
@@ -76,7 +88,6 @@ def evaluate(model, df_result, label='test'):
 
     y_true = df_result['RUL']
     y_hat = df_result['y_hat']
-
     df_result['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
     df_result['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or false
 
@@ -92,13 +103,13 @@ def evaluate(model, df_result, label='test'):
     y_true = df_result_grouped['RUL']
     y_hat = df_result_grouped['y_hat']
     ci_sk = ci_scikit(breakdown, y_true, y_hat)[0]
+    score = nasaScore(y_true, y_hat)  # score should be based on the last instance
     # print(f'Number of concordant pairs (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[1]}')
     # print(f'Number of discordant pairs (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[2]}')
     # print(f'Number of pairs having tied estimated risks (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[3]}')
     # print(f'Number of comparable pairs sharing the same time (scikit-survival): {ci_scikit(breakdown, y_true, y_hat)[4]}')
-
-    print('{} set RMSE:{:.2f}, CI(scikit):{:.4f}, R2:{:.2f}'.format(label, rmse, ci_sk, variance))
-    result = [model, label, rmse, ci_sk, variance]
+    print('{} set RMSE:{:.2f}, Score:{:.2f}, CI(scikit):{:.4f}, R2:{:.2f}'.format(label, rmse, score, ci_sk, variance))
+    result = [model, label, rmse, score, ci_sk, variance]
     return result
 
 
@@ -200,10 +211,7 @@ def evaluate_rsf(name, model, x_data, label, rmst_upper=400):
         df_s.set_index(model.event_times_, inplace=True)
         model_RMST = restricted_mean_survival_time(df_s, t=rmst_upper)  # calculate restricted mean survival time
         rmst.append(model_RMST)
-    #     np.set_printoptions(threshold=np.inf)
-    #     if (i % 9) == 0:
-    #        print(km_rmst)
-    #     plt.step(rsf.event_times_, s, where="post", label=str(i))
+    #   plt.step(rsf.event_times_, s, where="post", label=str(i))
     #
     # plt.ylabel("Survival probability")
     # plt.xlabel("Time in cycles")
@@ -214,14 +222,14 @@ def evaluate_rsf(name, model, x_data, label, rmst_upper=400):
     if label == "test":
         x_data['y_hat'] = -1
         for unit in range(0, x_data['unit num'].nunique()):
-            mask = (x_data['unit num'] == unit+1)
+            mask = (x_data['unit num'] == unit + 1)
             pred_rmst = rmst[unit]
             x_data.loc[mask, 'y_hat'] = pred_rmst - x_data['cycle']
 
     else:
         x_data['y_hat'] = rmst - x_data['cycle']
 
-    x_data['y_hat'].where(x_data['y_hat'] >= 0, 0, inplace=True)
+    # x_data['y_hat'].where(x_data['y_hat'] >= 0, 0, inplace=True)
     x_data['y_hat'] = x_data['y_hat'].clip(upper=clip_level)
     result_interim = evaluate(name, x_data, label)
     return result_interim, x_data['y_hat']
@@ -293,8 +301,8 @@ list_results.append(result)
 km_rmst_arr = [km_rmst for x in range(len(test_clipped))]
 df_result = test_clipped.copy()
 df_result['y_hat'] = km_rmst_arr - df_result['cycle']
-df_result['y_hat'].where(df_result['y_hat'] >= 0, 0, inplace=True)
-# y_hat = y_hat.clip(upper=clip_level)
+df_result['y_hat'].where(df_result['y_hat'] >= 0, 0, inplace=True)  # set negative y_hat to 0
+df_result['y_hat'] = df_result['y_hat'].clip(upper=clip_level)
 result = evaluate("KM_rmst", df_result, 'test')
 list_results.append(result)
 
@@ -577,6 +585,7 @@ rsf_x = rsf_x.reset_index().groupby(by='unit num').last()
 rsf_x['RUL'] = rsf_x['RUL'].clip(upper=clip_level)
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
 import xlwt
+
 rsf_x.to_excel("test.xlsx", index=False)
 
 rsf_y = rsf_x[['breakdown', 'cycle']]
@@ -585,19 +594,21 @@ rsf_y['breakdown'].replace(1, True, inplace=True)  # rsf only takes true or fals
 rsf_x_train, rsf_x_val, rsf_y_train, rsf_y_val = train_test_split(rsf_x, rsf_y, test_size=0.25,
                                                                   stratify=rsf_y['breakdown'],
                                                                   random_state=7)
-rsf_x_val.to_excel("rsf_x_val.xlsx", index=False)
 # Training RSF
 print("Predicting rsf")
 rsf_filename = 'finalized_untuned_rsf_model_incl_cycle.sav'
 rsf_predict_cols = remaining_sensors.copy()
-# rsf_predict_cols.append('cycle')
+
 if train_untuned_rsf:
     from randomsurvivalforest import train_rsf
+
     train_rsf(rsf_x_train[rsf_predict_cols], rsf_y_train, rsf_filename)
 rsf = pickle.load(open(rsf_filename, 'rb'))
 
-result, _ = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, 'train')
+result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, 'train')
 list_results.append(result)
+rsf_x_val['y_hat'] = y_hat
+rsf_x_val.to_excel("rsf_x_val.xlsx", index=False)
 
 result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, 'test')
 list_results.append(result)
@@ -664,6 +675,7 @@ print("done with tuning, start training")
 rsf_filename = 'finalized_tuned_rsf_model.sav'
 if train_tuned_rsf:
     from randomsurvivalforest import train_rsf
+
     train_rsf(rsf_x[rsf_predict_cols], rsf_y, rsf_filename, True)  # True to train tuned model
 rsf_tuned = pickle.load(open(rsf_filename, 'rb'))
 
@@ -712,7 +724,8 @@ if train_untuned_ct:
     batch_size = 256
 
     net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
-    ct_untuned = CoxTime(net, tt.optim.Adam, labtrans=labtrans)  # set labtrans to get back the correct time scale in output
+    ct_untuned = CoxTime(net, tt.optim.Adam,
+                         labtrans=labtrans)  # set labtrans to get back the correct time scale in output
 
     lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
                                     ct_y_train_split_tuple, batch_size, tolerance=2)
@@ -751,7 +764,7 @@ for col in surv:
     ct_rmst.append(km_rmst)
 
 ct_x_val['y_hat'] = ct_rmst - ct_x_val['cycle']
-ct_x_val['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
+# ct_x_val['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
 result = evaluate("ct (untuned)", ct_x_val, 'train')
 list_results.append(result)
 
@@ -763,7 +776,7 @@ for col in surv:
     ct_rmst.append(km_rmst)
 
 ct_test_scaled['y_hat'] = ct_rmst - ct_test_scaled['cycle']
-ct_test_scaled['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
+# ct_test_scaled['y_hat'].where(ct_x_val['y_hat'] >= 0, 0, inplace=True)
 result = evaluate("ct (untuned)", ct_test_scaled, 'test')
 ct_test_scaled['y_hat'] = ct_test_scaled['y_hat'].clip(upper=clip_level)
 list_results.append(result)
