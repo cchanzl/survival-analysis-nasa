@@ -2,7 +2,7 @@ import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from numpy.polynomial import Polynomial
+import itertools
 
 ##########################
 #   Helper Functions
@@ -36,23 +36,45 @@ def save_data_file(df, filename, FL=False):
     print("Saved ", filename, " successfully!")
 
 
-def polynomial_fitting(df_train, df_test, sensor_names, deg=3):
-    # copy the dataframe
-    df_poly_train = df_train.copy()
-    df_poly_test = df_test.copy()
+def slicing_generator(df, sensor_names, L=20, K=20):
+    other_headers = ['window num', 'unit num', 'RUL']
+    headers = [*sensor_names, *other_headers]
+    list_win = [[] for _ in range(len(sensor_names) + len(other_headers))]  # sensor + window number + unit num + RUL
+    for engine in df['unit num'].unique():
+        df_unit = df[df['unit num'] == engine]
+        num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
+        window_num = list(itertools.chain.from_iterable(itertools.repeat(x+1, K) for x in range(0, num_of_windows)))
+        list_win[len(sensor_names)] = [*list_win[len(sensor_names)], *window_num]
+        unit_num = [engine] * num_of_windows * K
+        list_win[len(sensor_names)+1] = [*list_win[len(sensor_names)+1], *unit_num]
+        for idx, sensor in enumerate(sensor_names):
+            internal_list = []
+            RUL_list = []
+            for window in range(0, num_of_windows):
+                offset = K * window
+                window_slice = df_unit.iloc[offset:offset+K][sensor]
+                if len(window_slice) < L:  # discard if ending number of instance in last window is smaller than K
+                    break
+                window_RUL = [df_unit.iloc[offset + K - 1]['RUL']] * K
+                internal_list = [*internal_list, *window_slice]
+                RUL_list = [*RUL_list, *window_RUL]
+            list_win[idx] = [*list_win[idx], *internal_list]
+            if idx == 0:
+                list_win[len(sensor_names) + 1 + 1] = [*list_win[len(sensor_names) + 1 + 1], *RUL_list]
 
+    df_win = pd.DataFrame.from_records(map(list, zip(*list_win)), columns=headers)
+    return df_win
+
+
+def polynomial_fitting(df, sensor_names, deg=3):
     # apply polynomial fitting
-    for i in df_poly_train['unit num'].unique():
-        df_train_unit = df_train[df_train['unit num'] == i]
-        df_test_unit = df_test[df_test['unit num'] == i]
+    df_poly = df.copy()
+    for engine in df['unit num'].unique():
+        df_unit = df[df['unit num'] == engine]
         for column in sensor_names:
-            train_p = np.poly1d(np.polyfit(df_train_unit['cycle'], df_train_unit[column], deg))
-            test_p = np.poly1d(np.polyfit(df_test_unit['cycle'], df_test_unit[column], deg))
-
-            df_poly_train.loc[df_poly_train['unit num'] == i, column] = train_p(range(0, len(df_train_unit[column])))
-            df_poly_test.loc[df_poly_test['unit num'] == i, column] = test_p(range(0, len(df_test_unit[column])))
-
-    return df_poly_train, df_poly_test
+            train_p = np.poly1d(np.polyfit(df_unit['cycle'], df_unit[column], deg))
+            df_poly.loc[df_poly['unit num'] == engine, column] = train_p(range(0, len(df_unit[column])))
+    return df_poly
 
 
 def z_score_scaler(df_train, df_test, sensor_names):
@@ -269,7 +291,7 @@ fl_data_splitter(test_split_points, test_clipped, test_file_names)
 ##########################################
 
 # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
-# feature engineering in line with this paper
+# feature engineering performed in line with this paper
 
 rul_rf_train = train_org.copy()
 rul_rf_test = test_org.copy()
@@ -278,19 +300,25 @@ rul_rf_test = test_org.copy()
 rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
 
 # apply polynomial fitting
-rul_rf_train_std_poly, rul_rf_test_std_poly = polynomial_fitting(rul_rf_train_std, rul_rf_test_std, remaining_sensors)
+rul_rf_train_std_poly = polynomial_fitting(rul_rf_train_std, remaining_sensors)
+rul_rf_test_std_poly = polynomial_fitting(rul_rf_test_std, remaining_sensors)
 
-save_data_file(rul_rf_train_std, "rul_rf_train_std")
+# save_data_file(rul_rf_train_std, "rul_rf_train_std")
 save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
 
 # plot line graph
-col = 'sens8'
-unit = 1
-plt.plot(rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, 'cycle'],
-         rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, col])
-plt.plot(rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, 'cycle'],
-         rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, col])
-plt.title(col)
-plt.xlabel('cycle')
-plt.ylabel('normalised sensor reading')
-plt.show()
+# col = 'sens8'
+# unit = 1
+# plt.plot(rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, 'cycle'],
+#          rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, col])
+# plt.plot(rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, 'cycle'],
+#          rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, col])
+# plt.title(col)
+# plt.xlabel('cycle')
+# plt.ylabel('normalised sensor reading')
+# plt.show()
+
+# extracting features from rolling window
+rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
+save_data_file(rul_rf_train_win, "rul_rf_train_win")
+# rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
