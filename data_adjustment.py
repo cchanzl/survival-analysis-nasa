@@ -36,10 +36,47 @@ def save_data_file(df, filename, FL=False):
     print("Saved ", filename, " successfully!")
 
 
+def trend_extractor(df, sensor_names, L=20, K=20):
+    other_headers = ['window num', 'unit num', 'RUL']
+    new_sensor_features = []
+    for n in sensor_names:
+        n = n + "_mean"
+        new_sensor_features.append(n)
+
+    # for n in sensor_names:
+    #     n = n + "_trend"
+    #     new_sensor_features.append(n)
+
+    num_sens_feature = len(new_sensor_features)
+    headers = [*new_sensor_features, 'window num', 'unit num', 'RUL']
+    list_trend = [[] for _ in range(len(headers))]
+    for engine in df['unit num'].unique():
+        df_unit = df[df['unit num'] == engine]
+        window_num = df_unit['window num'].unique().tolist()
+        list_trend[num_sens_feature] = [*list_trend[num_sens_feature], *window_num]
+        unit_num = [engine] * len(window_num)
+        list_trend[num_sens_feature+1] = [*list_trend[num_sens_feature+1], *unit_num]
+        for idx, sensor in enumerate(sensor_names):
+            mean_list = []
+            RUL_list = []
+            for window in range(0, len(df_unit['window num'].unique())):
+                offset = K * window
+                mean = df_unit.iloc[offset:offset+L][sensor].mean()
+                window_RUL = [df_unit.iloc[offset + L - 1]['RUL']]
+                mean_list = [*mean_list, mean]
+                RUL_list = [*RUL_list, *window_RUL]
+            list_trend[idx] = [*list_trend[idx], *mean_list]
+            if idx == 0:
+                list_trend[num_sens_feature + 1 + 1] = [*list_trend[num_sens_feature + 1 + 1], *RUL_list]
+
+    df_trended = pd.DataFrame.from_records(map(list, zip(*list_trend)), columns=headers)
+    return df_trended
+
+
 def slicing_generator(df, sensor_names, L=20, K=20):
     other_headers = ['window num', 'unit num', 'RUL']
     headers = [*sensor_names, *other_headers]
-    list_win = [[] for _ in range(len(sensor_names) + len(other_headers))]  # sensor + window number + unit num + RUL
+    list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL
     for engine in df['unit num'].unique():
         df_unit = df[df['unit num'] == engine]
         num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
@@ -52,10 +89,10 @@ def slicing_generator(df, sensor_names, L=20, K=20):
             RUL_list = []
             for window in range(0, num_of_windows):
                 offset = K * window
-                window_slice = df_unit.iloc[offset:offset+K][sensor]
+                window_slice = df_unit.iloc[offset:offset+L][sensor]
                 if len(window_slice) < L:  # discard if ending number of instance in last window is smaller than K
                     break
-                window_RUL = [df_unit.iloc[offset + K - 1]['RUL']] * K
+                window_RUL = [df_unit.iloc[offset + L - 1]['RUL']] * K
                 internal_list = [*internal_list, *window_slice]
                 RUL_list = [*RUL_list, *window_RUL]
             list_win[idx] = [*list_win[idx], *internal_list]
@@ -320,5 +357,8 @@ save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
 
 # extracting features from rolling window
 rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
-save_data_file(rul_rf_train_win, "rul_rf_train_win")
-# rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
+rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
+
+# extract trend from extracted features
+rul_rf_train_trended = trend_extractor(rul_rf_train_win, remaining_sensors)
+save_data_file(rul_rf_train_trended, "rul_rf_train_trended")
