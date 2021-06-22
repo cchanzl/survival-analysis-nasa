@@ -49,6 +49,8 @@ train_org = pd.read_csv(full_path + 'train_org.csv')
 test_org = pd.read_csv(full_path + 'test_org.csv')
 train_clipped = pd.read_csv(full_path + 'train_clipped.csv')
 test_clipped = pd.read_csv(full_path + 'test_clipped.csv')
+train_trend = pd.read_csv(full_path + 'rul_rf_train_trended.csv')
+test_trend = pd.read_csv(full_path + 'rul_rf_test_trended.csv')
 
 # create df to append y_hat and y_pred for graph plotting
 graph_data = test_clipped.copy()
@@ -234,6 +236,39 @@ def evaluate_rsf(name, model, x_data, label, rmst_upper=400):
     return result_interim, x_data['y_hat']
 
 
+def map_test_result(df_temp, df_main, L=20):
+    interim_result = df_main.copy()
+    interim_result['y_hat'] = 0
+    count = 0
+    for engine in interim_result['unit num'].unique():
+        # get first and last index position of each set of engine
+        first_idx = interim_result['unit num'].eq(engine).idxmax()
+        last_idx = interim_result['unit num'].eq(engine+1).idxmax()-1
+        if last_idx == -1:
+            last_idx = len(interim_result)-1
+
+        # populate RUL for middle cycles
+        while (last_idx - first_idx) >= L-1:
+            mid_idx = first_idx + L - 1
+            interim_result.iat[mid_idx, -1] = df_temp.iloc[count]['y_hat']
+            anchor_up = df_temp.iloc[count]['y_hat']
+            anchor_down = df_temp.iloc[count]['y_hat']
+            count += 1
+            first_idx += L
+            if engine == 7:
+                print(first_idx)
+                print(last_idx)
+            for offset in range(1, L):
+                interim_result.iat[mid_idx-offset, -1] = anchor_up + 1
+                anchor_up += 1
+
+        # populate RUL for remaining cycles
+        for offset in range(1, last_idx-mid_idx+1):
+            interim_result.iat[mid_idx + offset, -1] = anchor_down - 1
+            anchor_down -= 1
+
+    return interim_result
+
 ################################
 #   Global variables
 ################################
@@ -347,13 +382,13 @@ list_results.append(result)
 graph_data['Cox'] = df_result['y_hat']
 
 ################################
-#   Random Forest
+#   Random Forest (Part 1)
 ################################
 
 # https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
 
 print(delimiter)
-print("Started Random Forest")
+print("Started Random Forest (Part 1)")
 
 # data preparation
 rf_x = train_clipped.copy()
@@ -399,6 +434,45 @@ df_result['y_hat'] = rf.predict(test_clipped[remaining_sensors])
 result = evaluate("RF (tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['RF (tuned)'] = df_result['y_hat']
+
+
+################################
+#   Random Forest (Part 2)
+################################
+
+# https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
+
+print(delimiter)
+print("Started Random Forest (Part 2)")
+
+rf_x = train_trend.copy()
+rf_y = rf_x.pop('RUL')
+rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25, random_state=6)
+
+new_sensor_features = []
+for n in remaining_sensors:
+    n = n + "_mean"
+    new_sensor_features.append(n)
+
+for n in remaining_sensors:
+    n = n + "_trend"
+    new_sensor_features.append(n)
+
+# model fitting
+rf = RandomForestRegressor(n_estimators=20, criterion="mse", max_features="sqrt", random_state=42)
+rf.fit(rf_x_train[new_sensor_features], rf_y_train)
+
+# predict and evaluate, without any hyperparameter tuning
+rf_x_val['y_hat'] = rf.predict(rf_x_val[new_sensor_features])
+rf_x_val['RUL'] = rf_y_val
+print("pre-tuned trended RF")
+
+df_temp = test_trend.copy()
+df_temp['y_hat'] = rf.predict(test_trend[new_sensor_features])
+df_result = map_test_result(df_temp, test_clipped)
+result = evaluate("RF (trended)", df_result, 'test')
+list_results.append(result)
+graph_data['RF (trended)'] = df_result['y_hat']
 
 ################################
 #   Neural Network
@@ -728,10 +802,10 @@ if train_untuned_ct:
 
     lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
                                     ct_y_train_split_tuple, batch_size, tolerance=2)
-    _ = lrfinder.plot()
+    # _ = lrfinder.plot()
     # plt.show()
-
-    print("The best learning rate is: ", str(lrfinder.get_best_lr()))
+    #
+    # print("The best learning rate is: ", str(lrfinder.get_best_lr()))
 
     ct_untuned.optimizer.set_lr(lrfinder.get_best_lr())
 
@@ -743,8 +817,8 @@ if train_untuned_ct:
                          val_data=val.repeat(10).cat())
 #     pickle.dump(log, open(ct_untuned_filename, 'wb'))
 # ct_untuned = pickle.load(open(ct_untuned_filename, 'rb'))
-_ = log.plot()
-plt.show()
+# _ = log.plot()
+# plt.show()
 
 print(ct_untuned.partial_log_likelihood(*val).mean())
 _ = ct_untuned.compute_baseline_hazards()
@@ -752,10 +826,10 @@ surv = ct_untuned.predict_surv_df(ct_x_val[remaining_sensors].to_numpy().astype(
 
 # print(test_clipped.shape)
 # print(surv)
-surv.iloc[:, :20].plot()
-plt.ylabel('S(t | x)')
-_ = plt.xlabel('Time')
-plt.show()
+# surv.iloc[:, :20].plot()
+# plt.ylabel('S(t | x)')
+# _ = plt.xlabel('Time')
+# plt.show()
 
 ct_rmst = []  # create a list to store the rmst of each survival curve
 for col in surv:

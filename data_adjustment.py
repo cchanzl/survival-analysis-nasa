@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import itertools
+from sklearn.preprocessing import MinMaxScaler
 
 ##########################
 #   Helper Functions
 ##########################
-from sklearn.preprocessing import MinMaxScaler
 
 
 def add_remaining_useful_life(df):
@@ -43,9 +43,9 @@ def trend_extractor(df, sensor_names, L=20, K=20):
         n = n + "_mean"
         new_sensor_features.append(n)
 
-    # for n in sensor_names:
-    #     n = n + "_trend"
-    #     new_sensor_features.append(n)
+    for n in sensor_names:
+        n = n + "_trend"
+        new_sensor_features.append(n)
 
     num_sens_feature = len(new_sensor_features)
     headers = [*new_sensor_features, 'window num', 'unit num', 'RUL']
@@ -58,19 +58,33 @@ def trend_extractor(df, sensor_names, L=20, K=20):
         list_trend[num_sens_feature+1] = [*list_trend[num_sens_feature+1], *unit_num]
         for idx, sensor in enumerate(sensor_names):
             mean_list = []
+            trend_list = []
             RUL_list = []
             for window in range(0, len(df_unit['window num'].unique())):
                 offset = K * window
+
                 mean = df_unit.iloc[offset:offset+L][sensor].mean()
+                trend = np.polyfit(range(1, K+1), df_unit.iloc[offset:offset+L][sensor], 1)
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']]
+
+                trend_list = [*trend_list, trend[0]]
                 mean_list = [*mean_list, mean]
                 RUL_list = [*RUL_list, *window_RUL]
             list_trend[idx] = [*list_trend[idx], *mean_list]
+            list_trend[int(idx + num_sens_feature/2)] = [*list_trend[int(idx + num_sens_feature/2)], *trend_list]
             if idx == 0:
                 list_trend[num_sens_feature + 1 + 1] = [*list_trend[num_sens_feature + 1 + 1], *RUL_list]
 
     df_trended = pd.DataFrame.from_records(map(list, zip(*list_trend)), columns=headers)
     return df_trended
+
+
+def count_windows(length, L=20, K=20):
+    count = 0
+    while length >= L:
+        length = length - K
+        count += 1
+    return count
 
 
 def slicing_generator(df, sensor_names, L=20, K=20):
@@ -79,7 +93,8 @@ def slicing_generator(df, sensor_names, L=20, K=20):
     list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL
     for engine in df['unit num'].unique():
         df_unit = df[df['unit num'] == engine]
-        num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
+        #num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
+        num_of_windows = count_windows(len(df_unit), L, K)
         window_num = list(itertools.chain.from_iterable(itertools.repeat(x+1, K) for x in range(0, num_of_windows)))
         list_win[len(sensor_names)] = [*list_win[len(sensor_names)], *window_num]
         unit_num = [engine] * num_of_windows * K
@@ -118,6 +133,7 @@ def z_score_scaler(df_train, df_test, sensor_names):
     # copy the dataframe
     df_std_train = df_train.copy()
     df_std_test = df_test.copy()
+
     # apply the z-score method to each sensor data for each engine
     for i in df_std_train['unit num'].unique():
         df_train_unit = df_train[df_train['unit num'] == i]
@@ -194,22 +210,6 @@ def file_name_generator(split_points, listname, listtype="train"):
         listname.append(filename)
 
 
-##########################
-#   Loading Data
-##########################
-
-delimiter = "*" * 40
-header = ["unit num", "cycle", "op1", "op2", "op3"]
-for i in range(0, 26):
-    name = "sens"
-    name = name + str(i + 1)
-    header.append(name)
-
-full_path = "Dataset/"
-y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
-df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
-x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
-
 ################################
 #   Data Settings
 ################################
@@ -232,133 +232,157 @@ remaining_sensors = ['sens2', 'sens3', 'sens4', 'sens7', 'sens8', 'sens11',
 
 all_sensors = drop_sensors + remaining_sensors
 
-################################
-#   General Data pre-processing
-################################
+if __name__ == "__main__":
 
-# add RUL column
-train_org = add_remaining_useful_life(df_train_001)
-test_org = x_test_org.copy()
-y_test.rename(columns={0: 'RUL'}, inplace=True)
-y_test['unit num'] = [i for i in range(1, 101)]
-y_test['max_cycle'] = y_test['RUL'] + test_org.groupby('unit num').last().reset_index(drop=True)['cycle']
-test_org = pd.merge(test_org, y_test, on='unit num', how='left')
-test_org['RUL'] = test_org['max_cycle'] - test_org['cycle']
-# with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-#    print(test_org[['unit num', 'cycle', 'RUL', 'max_cycle']])
-test_org.drop(['max_cycle'], axis=1, inplace=True)
+    ##########################
+    #   Loading Data
+    ##########################
 
-# drop non-informative sensors and operational settings
-train_org.drop(labels=drop_labels, axis=1, inplace=True)
-test_org.drop(labels=drop_labels, axis=1, inplace=True)
-test_org.drop([1], axis=1, inplace=True)
+    delimiter = "*" * 40
+    header = ["unit num", "cycle", "op1", "op2", "op3"]
+    for i in range(0, 26):
+        name = "sens"
+        name = name + str(i + 1)
+        header.append(name)
 
-# add event indicator 'breakdown' column
-train_org['breakdown'] = 0
-idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-train_org.at[idx_last_record, 'breakdown'] = 1
-test_org['breakdown'] = 0
-idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-test_org.at[idx_last_record, 'breakdown'] = 1
+    full_path = "Dataset/"
+    y_test = pd.read_csv(full_path + 'RUL_FD001.txt', delimiter=" ", header=None)
+    df_train_001 = pd.read_csv(full_path + 'train_FD001.txt', delimiter=" ", names=header)
+    x_test_org = pd.read_csv(full_path + 'test_FD001.txt', delimiter=" ", names=header)
 
-# Add start cycle column (only required for Cox model)
-train_org['start'] = train_org['cycle'] - 1
-test_org['start'] = test_org['cycle'] - 1
+    ################################
+    #   General Data pre-processing
+    ################################
 
-# Save processed original data
-save_data_file(train_org, "train_org")
-save_data_file(test_org, "test_org")
+    # add RUL column
+    train_org = add_remaining_useful_life(df_train_001)
+    test_org = x_test_org.copy()
+    y_test.rename(columns={0: 'RUL'}, inplace=True)
+    y_test['unit num'] = [i for i in range(1, 101)]
+    y_test['max_cycle'] = y_test['RUL'] + test_org.groupby('unit num').last().reset_index(drop=True)['cycle']
+    test_org = pd.merge(test_org, y_test, on='unit num', how='left')
+    test_org['RUL'] = test_org['max_cycle'] - test_org['cycle']
+    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    #    print(test_org[['unit num', 'cycle', 'RUL', 'max_cycle']])
+    test_org.drop(['max_cycle'], axis=1, inplace=True)
 
-# apply a floor to RUL in training data. 125 is selected as the min cycle is 128. See EDA.
-train_clipped = train_org.copy()
-train_clipped['RUL'] = train_clipped['RUL'].clip(upper=clip_level)
-test_clipped = test_org.copy()
-test_clipped['RUL'] = test_clipped['RUL'].clip(upper=clip_level)
+    # drop non-informative sensors and operational settings
+    train_org.drop(labels=drop_labels, axis=1, inplace=True)
+    test_org.drop(labels=drop_labels, axis=1, inplace=True)
+    test_org.drop([1], axis=1, inplace=True)
 
-# Apply psuedo right censoring in training data. Important to improve accuracy and simulate right censoring
-if right_censoring:
-    train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
+    # add event indicator 'breakdown' column
+    train_org['breakdown'] = 0
+    idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    train_org.at[idx_last_record, 'breakdown'] = 1
+    test_org['breakdown'] = 0
+    idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    test_org.at[idx_last_record, 'breakdown'] = 1
 
-# Save processed original data
-save_data_file(train_clipped, "train_clipped")
-save_data_file(test_clipped, "test_clipped")
+    # Add start cycle column (only required for Cox model)
+    train_org['start'] = train_org['cycle'] - 1
+    test_org['start'] = test_org['cycle'] - 1
 
-##########################################
-#   Data Preparation for FL Training
-##########################################
+    # Save processed original data
+    save_data_file(train_org, "train_org")
+    save_data_file(test_org, "test_org")
 
-# This section is to prepare data for use in FATE Federated Learning package
-# Data used in FL must have the following headers
-# id   y   x0   x1   x2   x3   ...   xN
-# y must be the target label, in this case the RUL
-# See examples at https://github.com/FederatedAI/FATE/tree/master/examples/data
+    # apply a floor to RUL in training data. 125 is selected as the min cycle is 128. See EDA.
+    train_clipped = train_org.copy()
+    train_clipped['RUL'] = train_clipped['RUL'].clip(upper=clip_level)
+    test_clipped = test_org.copy()
+    test_clipped['RUL'] = test_clipped['RUL'].clip(upper=clip_level)
 
-train_split_points = [40, 80]
-test_split_points = [40, 80]
-no_of_parties = len(train_split_points) + 1  # number of parties in the FL
+    # Apply psuedo right censoring in training data. Important to improve accuracy and simulate right censoring
+    if right_censoring:
+        train_clipped = train_clipped[train_clipped['cycle'] <= cut_off].copy()
 
-train_file_names = []
-test_file_names = []
+    # Save processed original data
+    save_data_file(train_clipped, "train_clipped")
+    save_data_file(test_clipped, "test_clipped")
 
-file_name_generator(train_split_points, train_file_names, "train")
-file_name_generator(test_split_points, test_file_names, "test")
+    ##########################################
+    #   Data Preparation for RUL-RF
+    ##########################################
 
-minmax_scale = True
-train_no_rows = len(train_clipped)
-test_no_rows = len(test_clipped)
+    # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
+    # feature engineering performed in line with this paper
 
-# check that train and test are split into the same number
-if len(train_split_points) != len(test_split_points):
-    sys.exit('Number of split points between train and test does not match')
+    rul_rf_train = train_clipped.copy()
+    rul_rf_test = test_clipped.copy()
 
-# check number of file names matches number of parties
-if len(train_file_names) != len(test_file_names) != no_of_parties * 2:
-    sys.exit('Number of file names does not match number of parties')
+    # apply z-score normalisation
+    rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
 
-# Whether to apply minmax scaling
-if minmax_scale:
-    train_clipped, test_clipped = minmax_scaler(train_clipped, test_clipped, remaining_sensors)
+    # apply polynomial fitting
+    rul_rf_train_std_poly = polynomial_fitting(rul_rf_train_std, remaining_sensors)
+    rul_rf_test_std_poly = polynomial_fitting(rul_rf_test_std, remaining_sensors)
 
-# split and save files
-fl_data_splitter(train_split_points, train_clipped, train_file_names)
-fl_data_splitter(test_split_points, test_clipped, test_file_names)
+    # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
+    # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
 
-##########################################
-#   Data Preparation for RUL-RF
-##########################################
+    # plot line graph
+    # col = 'sens8'
+    # unit = 1
+    # plt.plot(rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, 'cycle'],
+    #          rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, col])
+    # plt.plot(rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, 'cycle'],
+    #          rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, col])
+    # plt.title(col)
+    # plt.xlabel('cycle')
+    # plt.ylabel('normalised sensor reading')
+    # plt.show()
 
-# https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
-# feature engineering performed in line with this paper
+    # extracting features from rolling window
+    rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
+    rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
+    # save_data_file(rul_rf_train_win, "rul_rf_train_win")
 
-rul_rf_train = train_org.copy()
-rul_rf_test = test_org.copy()
+    # extract trend from extracted features
+    rul_rf_train_trended = trend_extractor(rul_rf_train_win, remaining_sensors)
+    rul_rf_test_trended = trend_extractor(rul_rf_test_win, remaining_sensors)
 
-# apply z-score normalisation
-rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
+    save_data_file(rul_rf_train_trended, "rul_rf_train_trended")
+    save_data_file(rul_rf_test_trended, "rul_rf_test_trended")
 
-# apply polynomial fitting
-rul_rf_train_std_poly = polynomial_fitting(rul_rf_train_std, remaining_sensors)
-rul_rf_test_std_poly = polynomial_fitting(rul_rf_test_std, remaining_sensors)
+    ##########################################
+    #   Data Preparation for FL Training
+    ##########################################
 
-# save_data_file(rul_rf_train_std, "rul_rf_train_std")
-save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
+    # This section is to prepare data for use in FATE Federated Learning package
+    # Data used in FL must have the following headers
+    # id   y   x0   x1   x2   x3   ...   xN
+    # y must be the target label, in this case the RUL
+    # See examples at https://github.com/FederatedAI/FATE/tree/master/examples/data
 
-# plot line graph
-# col = 'sens8'
-# unit = 1
-# plt.plot(rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, 'cycle'],
-#          rul_rf_train_std.loc[rul_rf_train_std['unit num'] == unit, col])
-# plt.plot(rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, 'cycle'],
-#          rul_rf_train_std_poly.loc[rul_rf_train_std_poly['unit num'] == unit, col])
-# plt.title(col)
-# plt.xlabel('cycle')
-# plt.ylabel('normalised sensor reading')
-# plt.show()
+    train_split_points = [40, 80]
+    test_split_points = [40, 80]
+    no_of_parties = len(train_split_points) + 1  # number of parties in the FL
 
-# extracting features from rolling window
-rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
-rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
+    train_file_names = []
+    test_file_names = []
 
-# extract trend from extracted features
-rul_rf_train_trended = trend_extractor(rul_rf_train_win, remaining_sensors)
-save_data_file(rul_rf_train_trended, "rul_rf_train_trended")
+    file_name_generator(train_split_points, train_file_names, "train")
+    file_name_generator(test_split_points, test_file_names, "test")
+
+    minmax_scale = True
+    train_no_rows = len(train_clipped)
+    test_no_rows = len(test_clipped)
+
+    # check that train and test are split into the same number
+    if len(train_split_points) != len(test_split_points):
+        sys.exit('Number of split points between train and test does not match')
+
+    # check number of file names matches number of parties
+    if len(train_file_names) != len(test_file_names) != no_of_parties * 2:
+        sys.exit('Number of file names does not match number of parties')
+
+    # Whether to apply minmax scaling
+    if minmax_scale:
+        train_clipped, test_clipped = minmax_scaler(train_clipped, test_clipped, remaining_sensors)
+
+    # split and save files
+    fl_data_splitter(train_split_points, train_clipped, train_file_names)
+    fl_data_splitter(test_split_points, test_clipped, test_file_names)
+
+
