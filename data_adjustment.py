@@ -313,12 +313,13 @@ if __name__ == "__main__":
 
     # apply z-score normalisation
     rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
+    save_data_file(rul_rf_train_std, "rul_rf_train_std")
 
     # apply polynomial fitting
     rul_rf_train_std_poly = polynomial_fitting(rul_rf_train_std, remaining_sensors)
     rul_rf_test_std_poly = polynomial_fitting(rul_rf_test_std, remaining_sensors)
 
-    # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
+    save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
     # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
 
     # plot line graph
