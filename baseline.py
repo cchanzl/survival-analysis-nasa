@@ -74,7 +74,7 @@ def nasaScore(RUL_true, RUL_hat):
             score += np.math.exp(i / 13) - 1
         else:
             score += np.math.exp(- i / 10) - 1
-    return score
+    return score/len(RUL_true)  # should the score be averaged?
 
 
 def evaluate(model, df_result, label='test'):
@@ -255,9 +255,6 @@ def map_test_result(df_temp, df_main, L=20):
             anchor_down = df_temp.iloc[count]['y_hat']
             count += 1
             first_idx += L
-            if engine == 7:
-                print(first_idx)
-                print(last_idx)
             for offset in range(1, L):
                 interim_result.iat[mid_idx-offset, -1] = anchor_up + 1
                 anchor_up += 1
