@@ -1,6 +1,9 @@
 import sys
 import pandas as pd
 import numpy as np
+from scipy.cluster.hierarchy import single, complete, average, ward, dendrogram
+from sktime.distances.elastic_cython import dtw_distance
+from scipy.cluster.hierarchy import fcluster
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.preprocessing import MinMaxScaler
@@ -34,6 +37,19 @@ def save_data_file(df, filename, FL=False):
     filename = file_path + filename + ".csv"
     df.to_csv(filename, index=False)
     print("Saved ", filename, " successfully!")
+
+
+def hierarchical_clustering(dist_mat, method='complete'):
+    if method == 'complete':
+        Z = complete(dist_mat)
+    if method == 'single':
+        Z = single(dist_mat)
+    if method == 'average':
+        Z = average(dist_mat)
+    if method == 'ward':
+        Z = ward(dist_mat)
+
+    return Z
 
 
 def trend_extractor(df, sensor_names, L=20, K=20):
@@ -162,24 +178,30 @@ def minmax_scaler(df_train, df_test, sensor_names):
 
 
 def make_single_id(df):
-    df["unit num"] = df["unit num"] * 1000
-    df["unit num"] = df["unit num"] + df["cycle"]
+    df["unit num"] = df["unit num"] * 10
+    df["unit num"] = df["unit num"] + df["window num"]
 
 
 def rename_cols(df):
-    new_header = ["id", "y"]
+    new_header = ["id", "y", "cluster"]
+    independent_var = df.columns.tolist()
+    independent_var = [e for e in independent_var if e not in new_header]
+    cols = new_header + independent_var
+
     for i in range(0, len(df.columns) - len(new_header)):
         temp_name = "x"
         temp_name = temp_name + str(i)
         new_header.append(temp_name)
-    cols = df.columns.tolist()
-    cols = [cols[0]] + [cols[-1]] + cols[1:-1]
+
     df = df[cols]
     df.columns = new_header
     return df
 
 
-def fl_data_splitter(split, train, filename):
+def fl_data_splitter(train, filename):
+    # find number of parties
+    number_of_parties = train['cluster'].nunique()
+
     # to create a single index identifying engine number and cycle
     make_single_id(train)
 
@@ -187,24 +209,18 @@ def fl_data_splitter(split, train, filename):
     train.rename(columns={'RUL': 'y', 'unit num': 'id'}, inplace=True)
 
     # drop unused columns
-    train.drop(labels=["cycle", "breakdown", "start"], axis=1, inplace=True)
+    train.drop(labels=["window num"], axis=1, inplace=True)
 
     # rename remaining columns
     train = rename_cols(train)
 
     # split and save
-    for i in range(0, len(split) + 1):
-        if i == 0:  # first cut
-            temp_df = train.loc[(train["id"] < (split[i] + 1) * 1000)]
-        elif i == len(split):  # last cut
-            temp_df = train.loc[(train["id"] >= (split[i - 1] + 1) * 1000)]
-        else:  # middle splits
-            temp_df = train.loc[(train["id"] >= (split[i]) * 1000) & (train["id"] < (split[i] + 1) * 1000)]
+    for i in range(number_of_parties):
+        temp_df = train[train['cluster'] == i+1]
         save_data_file(temp_df, filename[i], True)
 
 
-def file_name_generator(split_points, listname, listtype="train"):
-    number_of_parties = len(split_points) + 1
+def file_name_generator(number_of_parties, listname, listtype="train"):
     for i in range(0, number_of_parties):
         filename = "party_" + chr(65 + i) + "_" + listtype
         listname.append(filename)
@@ -356,23 +372,59 @@ if __name__ == "__main__":
     # y must be the target label, in this case the RUL
     # See examples at https://github.com/FederatedAI/FATE/tree/master/examples/data
 
-    train_split_points = [40, 80]
-    test_split_points = [40, 80]
-    no_of_parties = len(train_split_points) + 1  # number of parties in the FL
+    # Perform time series clustering to identify K clusters
+    # Step 1: Reshape data
+    clipped = 7
+    rul_rf_trended_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()  # make all time series the same length
+    sel_sensor = "sens7_trend"
+    cluster_list = []
+    for engine in range(1, 101):
+        df_temp = rul_rf_trended_clipped[rul_rf_trended_clipped['unit num'] == engine]
+        cluster = []
+        cluster.append(df_temp[sel_sensor])
+        cluster_list.append(cluster)
+    df_cluster = pd.DataFrame(cluster_list)
+    df_cluster.columns = ['dim_0']
+
+    # Step 2: Compute distance matrix
+    # Reshape the data so each series is a column and call the dataframe.corr() function
+    distance_matrix = pd.concat([series for series in df_cluster['dim_0'].values], axis=1).corr()
+
+    series_list = df_cluster['dim_0'].values
+    for i in range(len(series_list)):
+        length = len(series_list[i])
+        series_list[i] = series_list[i].values.reshape((length, 1))
+
+    # Initialize distance matrix
+    n_series = len(series_list)
+    distance_matrix = np.zeros(shape=(n_series, n_series))
+
+    # Build distance matrix
+    for i in range(n_series):
+        for j in range(n_series):
+            x = series_list[i]
+            y = series_list[j]
+            if i != j:
+                dist = dtw_distance(x, y)
+                distance_matrix[i, j] = dist
+
+    # Step 3: Build a linkage matrix
+    no_of_parties = 3  # number of parties in the FL
+    linkage_matrix = hierarchical_clustering(distance_matrix)
+    cluster_labels_num = fcluster(linkage_matrix, no_of_parties , criterion='maxclust')
+
+    rul_rf_train_trended["cluster"] = [cluster_labels_num[i-1] for i in rul_rf_train_trended['unit num']]
+    save_data_file(rul_rf_train_trended, "rul_rf_train_trended_cluster")
 
     train_file_names = []
     test_file_names = []
 
-    file_name_generator(train_split_points, train_file_names, "train")
-    file_name_generator(test_split_points, test_file_names, "test")
+    file_name_generator(no_of_parties, train_file_names, "train")
+    file_name_generator(no_of_parties, test_file_names, "test")
 
     minmax_scale = True
     train_no_rows = len(train_clipped)
     test_no_rows = len(test_clipped)
-
-    # check that train and test are split into the same number
-    if len(train_split_points) != len(test_split_points):
-        sys.exit('Number of split points between train and test does not match')
 
     # check number of file names matches number of parties
     if len(train_file_names) != len(test_file_names) != no_of_parties * 2:
@@ -383,7 +435,7 @@ if __name__ == "__main__":
         train_clipped, test_clipped = minmax_scaler(train_clipped, test_clipped, remaining_sensors)
 
     # split and save files
-    fl_data_splitter(train_split_points, train_clipped, train_file_names)
-    fl_data_splitter(test_split_points, test_clipped, test_file_names)
+    fl_data_splitter(rul_rf_train_trended, train_file_names)
+    # fl_data_splitter(rul_rf_test_trended, test_file_names)
 
 
