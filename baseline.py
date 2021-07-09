@@ -472,7 +472,7 @@ list_results.append(result)
 graph_data['RF (trended)'] = df_result['y_hat']
 
 ################################
-#   Neural Network
+#   Neural Network (Part 1)
 ################################
 # https://towardsdatascience.com/lagged-mlp-for-predictive-maintenance-of-turbofan-engines-c79f02a15329
 

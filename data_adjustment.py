@@ -198,6 +198,7 @@ def rename_cols(df):
     return df
 
 
+# splits and save the data according to the cluster numbering
 def fl_data_splitter(train, filename):
     # find number of parties
     number_of_parties = train['cluster'].nunique()
@@ -210,6 +211,7 @@ def fl_data_splitter(train, filename):
 
     # drop unused columns
     train.drop(labels=["window num"], axis=1, inplace=True)
+    # train.drop(labels=["cluster"], axis=1, inplace=True)  # don't drop cluster first to check
 
     # rename remaining columns
     train = rename_cols(train)
@@ -374,7 +376,7 @@ if __name__ == "__main__":
 
     # Perform time series clustering to identify K clusters
     # Step 1: Reshape data
-    clipped = 7
+    clipped = 7  # limit at 7th window to have aligned number of windows across engines
     rul_rf_trended_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()  # make all time series the same length
     sel_sensor = "sens7_trend"
     cluster_list = []
