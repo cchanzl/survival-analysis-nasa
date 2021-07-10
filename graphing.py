@@ -28,7 +28,7 @@ def make_graph(selected_unit_num):
                 ax.plot(df_graph['cycle'], df_graph[col], label=col, linewidth=0.75)
     fig.legend(models, loc='lower center',
                ncol=len(models), bbox_transform=fig.transFigure)
-    plt.xlabel('Cycles')
+    plt.xlabel('Cycleas')
     plt.ylabel('RUL')
     plt.show()
 

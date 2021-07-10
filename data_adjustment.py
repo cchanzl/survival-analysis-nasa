@@ -202,7 +202,7 @@ def fl_data_splitter(df, filename, type):
     if type == "train":
         df['unit num'] = df['unit num'] * 100
     else:
-        df['unit num'] = df['unit num'] * 1000
+        df['unit num'] = df['unit num'] * 100000
     df['unit num'] = df['unit num'] + df['window num']
 
     # rename columns to fit FL format
