@@ -199,7 +199,7 @@ def fl_data_splitter(df, filename, type):
     number_of_parties = df['cluster'].nunique()
 
     # to create a single index identifying engine number and cycle
-    if type=="train":
+    if type == "train":
         df['unit num'] = df['unit num'] * 100
     else:
         df['unit num'] = df['unit num'] * 1000
@@ -210,7 +210,6 @@ def fl_data_splitter(df, filename, type):
 
     # drop unused columns
     df.drop(labels=["window num"], axis=1, inplace=True)
-    # train.drop(labels=["cluster"], axis=1, inplace=True)  # don't drop cluster first to check
 
     # rename remaining columns
     df = rename_cols(df)
@@ -218,6 +217,7 @@ def fl_data_splitter(df, filename, type):
     # split and save
     for i in range(number_of_parties):
         temp_df = df[df['cluster'] == i + 1]
+        temp_df.drop(labels=["cluster"], axis=1, inplace=True)
         save_data_file(temp_df, filename[i], True)
 
 
