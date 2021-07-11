@@ -222,8 +222,7 @@ def fl_data_splitter(df, filename, type):
         # Print details on the number of engines in each file
         cycle_series = temp_df['id'] % multiplier
         num_of_engine = (temp_df['id'] - cycle_series) / multiplier
-        print(type + " dataset " + str(i) + " has " + str(num_of_engine.nunique()) + " engines")
-
+        print(type + " dataset " + chr(65 + i) + " has " + str(num_of_engine.nunique()) + " engines")
         temp_df.drop(labels=["cluster"], axis=1, inplace=True)
         save_data_file(temp_df, filename[i], True)
 
@@ -277,6 +276,17 @@ def file_name_generator(number_of_parties, listname, listtype="train"):
         filename = "party_" + chr(65 + i) + "_" + listtype
         listname.append(filename)
 
+
+def re_map_test(df_test, df_train):
+    temp_test = df_test.copy()
+    train_count = df_train.cluster.value_counts().sort_values(ascending=False)
+    test_count = df_test.cluster.value_counts().sort_values(ascending=False)
+    temp_test['new_cluster'] = 0
+    for i in range(len(train_count)):
+        temp_test.loc[temp_test['cluster'] == int(test_count.index[i]), 'new_cluster'] = train_count.index[i]
+    temp_test.drop('cluster', inplace=True, axis=1)
+    temp_test.rename(columns={"new_cluster": "cluster"}, inplace=True)
+    return temp_test
 
 ################################
 #   Data Settings
@@ -426,6 +436,10 @@ if __name__ == "__main__":
 
     # Perform time series clustering to identify K clusters
     # https://towardsdatascience.com/how-to-apply-hierarchical-clustering-to-time-series-a5fe2a7d8447
+
+    # Step 0: Decide on the number of parties
+    num_parties = 3  # number of parties in the FL
+
     # Step 1: Reshape data
     rul_FL_train_trended = rul_rf_train_trended.copy()
     rul_FL_test_trended = rul_rf_test_trended.copy()
@@ -442,33 +456,17 @@ if __name__ == "__main__":
 
     # Step 2: Segment the data
     # Reshape the data so each series is a column and call the dataframe.corr() function
-    num_parties = 3  # number of parties in the FL
-
     rul_FL_train_trended_cluster = segment_data_FL(rul_FL_train_trended, df_cluster_train, num_parties)
     rul_FL_test_trended_cluster = segment_data_FL(rul_FL_test_trended, df_cluster_test, num_parties)
 
     # Step 3: Assign the largest test dataset to the largest train dataset and so on
-    def re_map_test(df_test, df_train):
-        temp_test = df_test.copy()
-        train_count = df_train.cluster.value_counts().sort_values(ascending=False)
-        test_count = df_test.cluster.value_counts().sort_values(ascending=False)
-        print(train_count)
-        print(test_count)
-        print(train_count.index[1])
-        temp_test['new_cluster'] = 0
-        for i in range(len(train_count)):
-            temp_test.loc[temp_test['cluster'] == int(test_count.index[i]), 'new_cluster'] = train_count.index[i]
-        temp_test.drop('cluster', inplace=True, axis=1)
-        temp_test.rename(columns={"new_cluster": "cluster"}, inplace=True)
-        return temp_test
-
-
     rul_FL_test_trended_cluster = re_map_test(rul_FL_test_trended_cluster, rul_FL_train_trended_cluster)
 
     # Save split csv for verification
     save_data_file(rul_FL_train_trended_cluster, "rul_FL_train_trended_cluster")
     save_data_file(rul_FL_test_trended_cluster, "rul_FL_test_trended_cluster")
 
+    # Step 4: Save the datafiles
     # Generate file_names
     train_file_names = []
     test_file_names = []
