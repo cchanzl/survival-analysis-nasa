@@ -1,5 +1,6 @@
 import sys
 import pandas as pd
+pd.options.mode.chained_assignment = None  # default='warn'
 import numpy as np
 from scipy.cluster.hierarchy import single, complete, average, ward, dendrogram
 from sktime.distances.elastic_cython import dtw_distance
@@ -193,16 +194,29 @@ def rename_cols(df):
     return df
 
 
+def create_cluster(df, sel_sensor="sens7_trend"):
+    # sensor used to partition the data is sens7_trend
+    cluster_list = []
+    for engine in range(1, 101):
+        df_temp = df[df['unit num'] == engine]
+        cluster = []
+        cluster.append(df_temp[sel_sensor])
+        cluster_list.append(cluster)
+    df_cluster = pd.DataFrame(cluster_list)  # convert to df
+    df_cluster.columns = ['dim_0']  # rename as 'dim_0'
+    return df_cluster
+
+
 # splits and save the data according to the cluster numbering
 def fl_data_splitter(df, filename, type):
     # find number of parties
     number_of_parties = df['cluster'].nunique()
 
     # to create a single index identifying engine number and cycle
+    multiplier = 100000
     if type == "train":
-        df['unit num'] = df['unit num'] * 100
-    else:
-        df['unit num'] = df['unit num'] * 100000
+        multiplier = 100
+    df['unit num'] = df['unit num'] * multiplier
     df['unit num'] = df['unit num'] + df['window num']
 
     # rename columns to fit FL format
@@ -217,8 +231,43 @@ def fl_data_splitter(df, filename, type):
     # split and save
     for i in range(number_of_parties):
         temp_df = df[df['cluster'] == i + 1]
+
+        # Print details on the number of engines in each file
+        cycle_series = temp_df['id'] % multiplier
+        num_of_engine = (temp_df['id'] - cycle_series) / multiplier
+        print(type + str(i) + " has " + str(num_of_engine.nunique()) + " engines")
+
         temp_df.drop(labels=["cluster"], axis=1, inplace=True)
         save_data_file(temp_df, filename[i], True)
+
+
+def segment_data_FL(df_data, df_cluster, no_of_parties):
+    # distance_matrix = pd.concat([series for series in df_cluster['dim_0'].values], axis=1).corr()
+
+    series_list = df_cluster['dim_0'].values
+    for i in range(len(series_list)):
+        length = len(series_list[i])
+        series_list[i] = series_list[i].values.reshape((length, 1))
+
+    # Initialize distance matrix
+    n_series = len(series_list)
+    distance_matrix = np.zeros(shape=(n_series, n_series))
+
+    # Build distance matrix
+    for i in range(n_series):
+        for j in range(n_series):
+            x = series_list[i]
+            y = series_list[j]
+            if i != j:
+                dist = dtw_distance(x, y)
+                distance_matrix[i, j] = dist
+
+    # Step 3: Build a linkage matrix
+    linkage_matrix = hierarchical_clustering(distance_matrix)
+    cluster_labels_num = fcluster(linkage_matrix, no_of_parties, criterion='maxclust')
+
+    df_data["cluster"] = [cluster_labels_num[i-1] for i in df_data['unit num']]
+    return df_data
 
 
 def file_name_generator(number_of_parties, listname, listtype="train"):
@@ -379,20 +428,6 @@ if __name__ == "__main__":
     rul_FL_train_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()
     rul_FL_test_clipped = rul_rf_test_trended[rul_rf_test_trended['window num'] <= clipped].copy()
 
-
-    def create_cluster(df, sel_sensor="sens7_trend"):
-        # sensor used to partition the data is sens7_trend
-        cluster_list = []
-        for engine in range(1, 101):
-            df_temp = df[df['unit num'] == engine]
-            cluster = []
-            cluster.append(df_temp[sel_sensor])
-            cluster_list.append(cluster)
-        df_cluster = pd.DataFrame(cluster_list)  # convert to df
-        df_cluster.columns = ['dim_0']  # rename as 'dim_0'
-        return df_cluster
-
-
     # create a df of 100 lists of readings from "sel_sensor"
     df_cluster_train = create_cluster(rul_FL_train_clipped)
     df_cluster_test = create_cluster(rul_FL_test_clipped)
@@ -401,40 +436,27 @@ if __name__ == "__main__":
     # Reshape the data so each series is a column and call the dataframe.corr() function
     num_parties = 3  # number of parties in the FL
 
-    def segment_data_FL(df_data, df_cluster, no_of_parties):
-        # distance_matrix = pd.concat([series for series in df_cluster['dim_0'].values], axis=1).corr()
+    # Append cluster numbering to combined train_test data for consistency
+    rul_FL_train_clipped["type"] = "train"
+    rul_FL_test_clipped["type"] = "test"
+    rul_FL_train_test_trended = rul_FL_train_clipped.append(rul_FL_test_clipped, ignore_index=True)
+    rul_FL_train_test_trended = segment_data_FL(rul_FL_train_test_trended, df_cluster_train, num_parties)
 
-        series_list = df_cluster['dim_0'].values
-        for i in range(len(series_list)):
-            length = len(series_list[i])
-            series_list[i] = series_list[i].values.reshape((length, 1))
+    # Split into test and train again
+    rul_FL_train_trended = rul_FL_train_test_trended[rul_FL_train_test_trended.type == "train"]
+    rul_FL_test_trended = rul_FL_train_test_trended[rul_FL_train_test_trended.type == "test"]
 
-        # Initialize distance matrix
-        n_series = len(series_list)
-        distance_matrix = np.zeros(shape=(n_series, n_series))
+    rul_FL_train_trended.drop('type', axis=1, inplace=True)
+    rul_FL_test_trended.drop('type', axis=1, inplace=True)
 
-        # Build distance matrix
-        for i in range(n_series):
-            for j in range(n_series):
-                x = series_list[i]
-                y = series_list[j]
-                if i != j:
-                    dist = dtw_distance(x, y)
-                    distance_matrix[i, j] = dist
+    rul_FL_train_trended.reset_index(inplace=True, drop=True)
+    rul_FL_test_trended.reset_index(inplace=True, drop=True)
 
-        # Step 3: Build a linkage matrix
-        linkage_matrix = hierarchical_clustering(distance_matrix)
-        cluster_labels_num = fcluster(linkage_matrix, no_of_parties, criterion='maxclust')
+    # Save split csv for verification
+    save_data_file(rul_FL_train_trended, "rul_rf_train_trended_cluster")
+    save_data_file(rul_FL_test_trended, "rul_rf_test_trended_cluster")
 
-        df_data["cluster"] = [cluster_labels_num[i-1] for i in df_data['unit num']]
-        return df_data
-
-    rul_rf_train_trended = segment_data_FL(rul_rf_train_trended, df_cluster_train, num_parties)
-    rul_rf_test_trended = segment_data_FL(rul_rf_test_trended, df_cluster_test, num_parties)
-
-    save_data_file(rul_rf_train_trended, "rul_rf_train_trended_cluster")
-    save_data_file(rul_rf_test_trended, "rul_rf_test_trended_cluster")
-
+    # Generate file_names
     train_file_names = []
     test_file_names = []
 
@@ -442,7 +464,7 @@ if __name__ == "__main__":
     file_name_generator(num_parties, test_file_names, "test")
 
     # split and save files
-    fl_data_splitter(rul_rf_train_trended, train_file_names, "train")
-    fl_data_splitter(rul_rf_test_trended, test_file_names, "test")
+    fl_data_splitter(rul_FL_train_trended, train_file_names, "train")
+    fl_data_splitter(rul_FL_test_trended, test_file_names, "test")
 
 
