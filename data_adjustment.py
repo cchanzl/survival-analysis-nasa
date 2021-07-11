@@ -447,7 +447,7 @@ if __name__ == "__main__":
     rul_FL_train_trended_cluster = segment_data_FL(rul_FL_train_trended, df_cluster_train, num_parties)
     rul_FL_test_trended_cluster = segment_data_FL(rul_FL_test_trended, df_cluster_test, num_parties)
 
-    # Step 3: Assign the largest test dataset to the largest train dataset
+    # Step 3: Assign the largest test dataset to the largest train dataset and so on
     def re_map_test(df_test, df_train):
         temp_test = df_test.copy()
         train_count = df_train.cluster.value_counts().sort_values(ascending=False)
