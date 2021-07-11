@@ -40,19 +40,6 @@ def save_data_file(df, filename, FL=False):
     print("Saved ", filename, " successfully!")
 
 
-def hierarchical_clustering(dist_mat, method='complete'):
-    if method == 'complete':
-        Z = complete(dist_mat)
-    if method == 'single':
-        Z = single(dist_mat)
-    if method == 'average':
-        Z = average(dist_mat)
-    if method == 'ward':
-        Z = ward(dist_mat)
-
-    return Z
-
-
 def trend_extractor(df, sensor_names, L=20, K=20):
     other_headers = ['window num', 'unit num', 'RUL']
     new_sensor_features = []
@@ -194,11 +181,11 @@ def rename_cols(df):
     return df
 
 
-def create_cluster(df, sel_sensor="sens7_trend"):
+def create_cluster(df, sel_sensor="sens20_trend"):
     # sensor used to partition the data is sens7_trend
     cluster_list = []
-    for engine in range(1, 101):
-        df_temp = df[df['unit num'] == engine]
+    for engine in range(1, 201):
+        df_temp = df[df['combined_id'] == engine]
         cluster = []
         cluster.append(df_temp[sel_sensor])
         cluster_list.append(cluster)
@@ -235,15 +222,30 @@ def fl_data_splitter(df, filename, type):
         # Print details on the number of engines in each file
         cycle_series = temp_df['id'] % multiplier
         num_of_engine = (temp_df['id'] - cycle_series) / multiplier
-        print(type + str(i) + " has " + str(num_of_engine.nunique()) + " engines")
+        print(type + " dataset " + str(i) + " has " + str(num_of_engine.nunique()) + " engines")
 
         temp_df.drop(labels=["cluster"], axis=1, inplace=True)
         save_data_file(temp_df, filename[i], True)
 
+def hierarchical_clustering(dist_mat, method='complete'):
+    if method == 'complete':
+        Z = complete(dist_mat)
+    if method == 'single':
+        Z = single(dist_mat)
+    if method == 'average':
+        Z = average(dist_mat)
+    if method == 'ward':
+        Z = ward(dist_mat)
+
+    fig = plt.figure(figsize=(16, 8))
+    dn = dendrogram(Z)
+    plt.title(f"Dendrogram for {method}-linkage with correlation distance")
+    plt.show()
+
+    return Z
+
 
 def segment_data_FL(df_data, df_cluster, no_of_parties):
-    # distance_matrix = pd.concat([series for series in df_cluster['dim_0'].values], axis=1).corr()
-
     series_list = df_cluster['dim_0'].values
     for i in range(len(series_list)):
         length = len(series_list[i])
@@ -266,7 +268,7 @@ def segment_data_FL(df_data, df_cluster, no_of_parties):
     linkage_matrix = hierarchical_clustering(distance_matrix)
     cluster_labels_num = fcluster(linkage_matrix, no_of_parties, criterion='maxclust')
 
-    df_data["cluster"] = [cluster_labels_num[i-1] for i in df_data['unit num']]
+    df_data["cluster"] = [cluster_labels_num[i-1] for i in df_data['combined_id']]
     return df_data
 
 
@@ -423,26 +425,38 @@ if __name__ == "__main__":
     # See examples at https://github.com/FederatedAI/FATE/tree/master/examples/data
 
     # Perform time series clustering to identify K clusters
+    # https://towardsdatascience.com/how-to-apply-hierarchical-clustering-to-time-series-a5fe2a7d8447
     # Step 1: Reshape data
-    clipped = 7  # limit at 7th window to have aligned number of windows across engines
-    rul_FL_train_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()
-    rul_FL_test_clipped = rul_rf_test_trended[rul_rf_test_trended['window num'] <= clipped].copy()
+    rul_FL_train_clipped = rul_rf_train_trended.copy()
+    rul_FL_test_clipped = rul_rf_test_trended.copy()
 
-    # create a df of 100 lists of readings from "sel_sensor"
-    df_cluster_train = create_cluster(rul_FL_train_clipped)
-    df_cluster_test = create_cluster(rul_FL_test_clipped)
+    clip_FL = False  # note that clipping will affect the mapping of results back to original data!
+    if clip_FL:
+        clipped = 7  # limit at xth window to have aligned number of windows across engines
+        rul_FL_train_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()
+        rul_FL_test_clipped = rul_rf_test_trended[rul_rf_test_trended['window num'] <= clipped].copy()
+
+    rul_FL_train_clipped["type"] = "train"
+    rul_FL_test_clipped["type"] = "test"
+    rul_FL_train_test_trended = rul_FL_train_clipped.append(rul_FL_test_clipped, ignore_index=True)
+
+    # create a df of 200 lists of readings from "sel_sensor"
+    rul_FL_train_test_trended['combined_id'] = 0
+    rul_FL_train_test_trended.loc[rul_FL_train_test_trended['type'] == "train", 'combined_id'] = rul_FL_train_test_trended['unit num']
+    rul_FL_train_test_trended.loc[rul_FL_train_test_trended['type'] == "test", 'combined_id'] = rul_FL_train_test_trended['unit num'] + 100
+    save_data_file(rul_FL_train_test_trended, "rul_FL_train_test_trended")
+    df_cluster_train_test = create_cluster(rul_FL_train_test_trended)
+    save_data_file(df_cluster_train_test, "df_cluster_train_test")
 
     # Step 2: Compute distance matrix
     # Reshape the data so each series is a column and call the dataframe.corr() function
     num_parties = 3  # number of parties in the FL
 
     # Append cluster numbering to combined train_test data for consistency
-    rul_FL_train_clipped["type"] = "train"
-    rul_FL_test_clipped["type"] = "test"
-    rul_FL_train_test_trended = rul_FL_train_clipped.append(rul_FL_test_clipped, ignore_index=True)
-    rul_FL_train_test_trended = segment_data_FL(rul_FL_train_test_trended, df_cluster_train, num_parties)
+    rul_FL_train_test_trended = segment_data_FL(rul_FL_train_test_trended, df_cluster_train_test, num_parties)
 
     # Split into test and train again
+    rul_FL_train_test_trended.drop('combined_id', axis=1, inplace=True)
     rul_FL_train_trended = rul_FL_train_test_trended[rul_FL_train_test_trended.type == "train"]
     rul_FL_test_trended = rul_FL_train_test_trended[rul_FL_train_test_trended.type == "test"]
 
@@ -453,8 +467,8 @@ if __name__ == "__main__":
     rul_FL_test_trended.reset_index(inplace=True, drop=True)
 
     # Save split csv for verification
-    save_data_file(rul_FL_train_trended, "rul_rf_train_trended_cluster")
-    save_data_file(rul_FL_test_trended, "rul_rf_test_trended_cluster")
+    save_data_file(rul_FL_train_trended, "rul_FL_train_trended_cluster")
+    save_data_file(rul_FL_test_trended, "rul_FL_test_trended_cluster")
 
     # Generate file_names
     train_file_names = []
