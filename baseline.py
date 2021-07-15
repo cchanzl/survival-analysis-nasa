@@ -1,5 +1,7 @@
 import os
 
+from tensorflow.python.keras.utils.np_utils import to_categorical
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress info, warning and error tensorflow messages
 from datetime import datetime  # to timestamp results of each model
 
@@ -51,6 +53,8 @@ train_clipped = pd.read_csv(full_path + 'train_clipped.csv')
 test_clipped = pd.read_csv(full_path + 'test_clipped.csv')
 train_trend = pd.read_csv(full_path + 'rul_rf_train_trended.csv')
 test_trend = pd.read_csv(full_path + 'rul_rf_test_trended.csv')
+test_trend_class = pd.read_csv(full_path + 'rul_rf_test_trended_classified.csv')
+train_trend_class = pd.read_csv(full_path + 'rul_rf_train_trended_classified.csv')
 
 # create df to append y_hat and y_pred for graph plotting
 graph_data = test_clipped.copy()
@@ -784,6 +788,51 @@ df_result = map_test_result(df_temp, test_clipped)
 result = evaluate("NN (tuned trended)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (tuned trended)'] = df_result['y_hat']
+
+#############################################
+#   Neural Network (Part 2 - classification)
+#############################################
+
+nb_classes = 16
+trended_x = train_trend_class.copy()
+trended_x.drop(labels='RUL', axis=1, inplace=True)
+trended_y = to_categorical(trended_x.pop('category'), nb_classes)
+
+trended_x_train, trended_x_val, trended_y_train, trended_y_val = train_test_split(trended_x, trended_y,
+                                                                                  test_size=0.25, random_state=6)
+
+# training the model
+filename = 'trended_classification_NN_model.h5'
+train_class_untuned_NN = True
+if train_class_untuned_NN:
+    # construct neural network
+    nn_trended_class_untuned = Sequential()
+    nn_trended_class_untuned.add(Dense(16, input_dim=len(new_sensor_features), activation='relu'))
+    nn_trended_class_untuned.add(Dense(32, activation='relu'))
+    nn_trended_class_untuned.add(Dense(64, activation='relu'))
+    nn_trended_class_untuned.add(Dense(nb_classes, activation='softmax'))
+    nn_trended_class_untuned.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    epochs = 20
+    history = nn_trended_class_untuned.fit(trended_x_train[new_sensor_features], trended_y_train,
+                                           validation_data=(trended_x_val[new_sensor_features], trended_y_val),
+                                           epochs=epochs, verbose=0)
+    nn_trended_class_untuned.save(filename)  # save trained model
+
+nn_trended_class_untuned = load_model(filename)
+# print(np.argmax(nn_trended_class_untuned.predict(trended_x_val[new_sensor_features]), axis=1))
+trended_x_val['y_hat'] = np.argmax(nn_trended_class_untuned.predict(trended_x_val[new_sensor_features]), axis=1)  # get back labels by taking most likely prediction
+print("pre-tuned classification Neural Network")
+
+df_temp = test_trend_class.copy()
+df_temp['y_hat'] = np.argmax(nn_trended_class_untuned.predict(test_trend_class[new_sensor_features]), axis=1)
+df_temp.to_excel("hello_world.xlsx")
+df_temp['y_hat'] = df_temp['y_hat'] * 10 + 5
+df_result = map_test_result(df_temp, test_clipped)
+result = evaluate("NN (trended classification)", df_result, 'test')
+list_results.append(result)
+graph_data['NN (trended classification)'] = df_result['y_hat']
+
 
 ################################
 #   Random Survival Forest

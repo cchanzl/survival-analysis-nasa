@@ -71,6 +71,7 @@ def trend_extractor(df, sensor_names, L=20, K=20):
                 mean = df_unit.iloc[offset:offset+L][sensor].mean()
                 trend = np.polyfit(range(1, K+1), df_unit.iloc[offset:offset+L][sensor], 1)
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']]
+
                 trend_list = [*trend_list, trend[0]]
                 mean_list = [*mean_list, mean]
                 RUL_list = [*RUL_list, *window_RUL]
@@ -105,7 +106,6 @@ def slicing_generator(df, sensor_names, L=20, K=20):
         list_win[len(sensor_names)+1] = [*list_win[len(sensor_names)+1], *unit_num]
         for idx, sensor in enumerate(sensor_names):
             internal_list = []
-            breakdown_list = []
             RUL_list = []
             for window in range(0, num_of_windows):
                 offset = K * window
@@ -351,9 +351,13 @@ if __name__ == "__main__":
     test_org.drop(labels=drop_labels, axis=1, inplace=True)
     test_org.drop([1], axis=1, inplace=True)
 
-    # add event indicator 'breakdown' column
-    train_org['breakdown'] = np.where(train_org['RUL'] == 0, 1, 0)
-    test_org['breakdown'] = np.where(test_org['RUL'] == 0, 1, 0)
+    # add event indicator 'breakdown' column, which represents either breakdown or censored event
+    train_org['breakdown'] = 0
+    idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    train_org.at[idx_last_record, 'breakdown'] = 1
+    test_org['breakdown'] = 0
+    idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    test_org.at[idx_last_record, 'breakdown'] = 1
 
     # Add start cycle column (only required for Cox model)
     train_org['start'] = train_org['cycle'] - 1
@@ -384,8 +388,8 @@ if __name__ == "__main__":
     # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
     # feature engineering performed in line with this paper
 
-    rul_rf_train = train_org.copy()
-    rul_rf_test = test_org.copy()
+    rul_rf_train = train_clipped.copy()  # clipped produces better result
+    rul_rf_test = test_clipped.copy()  # clipped produces better result
 
     # apply z-score normalisation
     rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)

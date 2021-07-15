@@ -15,7 +15,7 @@ graph_data = pd.read_csv('graphing.csv', delimiter=",")
 
 def make_graph(selected_unit_num):
     fig, axs = plt.subplots(int(len(selected_unit_num)/2), 2)
-    models = ['RUL', 'km_rmst', 'Cox', 'NN (tuned)', 'RF (tuned)', 'RF (trended)', 'rsf (tuned)', "ct (untuned)"]
+    models = ['RUL', 'km_rmst', 'Cox', 'NN (tuned)', 'RF (tuned)', 'RF (trended)', 'NN (trended classification)', 'NN (tuned trended)']
     i = -1
     for ax in axs.flatten():
         i += 1
