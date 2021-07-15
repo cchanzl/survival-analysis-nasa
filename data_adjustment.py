@@ -1,4 +1,5 @@
 import sys
+import math
 import pandas as pd
 pd.options.mode.chained_assignment = None  # default='warn'
 import numpy as np
@@ -70,7 +71,6 @@ def trend_extractor(df, sensor_names, L=20, K=20):
                 mean = df_unit.iloc[offset:offset+L][sensor].mean()
                 trend = np.polyfit(range(1, K+1), df_unit.iloc[offset:offset+L][sensor], 1)
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']]
-
                 trend_list = [*trend_list, trend[0]]
                 mean_list = [*mean_list, mean]
                 RUL_list = [*RUL_list, *window_RUL]
@@ -92,7 +92,7 @@ def count_windows(length, L=20, K=20):
 
 
 def slicing_generator(df, sensor_names, L=20, K=20):
-    other_headers = ['window num', 'unit num', 'RUL', 'breakdown']
+    other_headers = ['window num', 'unit num', 'RUL']
     headers = [*sensor_names, *other_headers]
     list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL + breakdown
     for engine in df['unit num'].unique():
@@ -113,14 +113,11 @@ def slicing_generator(df, sensor_names, L=20, K=20):
                 if len(window_slice) < L:  # discard if ending number of instance in last window is smaller than K
                     break
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']] * K  # get last RUL and repeat that K times
-                window_breakdown = [df_unit.iloc[offset:offset + L]['breakdown'].sum()] * K  # get sum of breakdown and repeat that k times
                 internal_list = [*internal_list, *window_slice]
-                breakdown_list = [*breakdown_list, *window_breakdown]
                 RUL_list = [*RUL_list, *window_RUL]
             list_win[idx] = [*list_win[idx], *internal_list]
             if idx == 0:
                 list_win[len(sensor_names) + 1 + 1] = [*list_win[len(sensor_names) + 1 + 1], *RUL_list]
-                list_win[len(sensor_names) + 1 + 1 + 1] = [*list_win[len(sensor_names) + 1 + 1 + 1], *breakdown_list]
 
     df_win = pd.DataFrame.from_records(map(list, zip(*list_win)), columns=headers)
     return df_win
@@ -355,12 +352,8 @@ if __name__ == "__main__":
     test_org.drop([1], axis=1, inplace=True)
 
     # add event indicator 'breakdown' column
-    train_org['breakdown'] = 0
-    idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-    train_org.at[idx_last_record, 'breakdown'] = 1
-    test_org['breakdown'] = 0
-    idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
-    test_org.at[idx_last_record, 'breakdown'] = 1
+    train_org['breakdown'] = np.where(train_org['RUL'] == 0, 1, 0)
+    test_org['breakdown'] = np.where(test_org['RUL'] == 0, 1, 0)
 
     # Add start cycle column (only required for Cox model)
     train_org['start'] = train_org['cycle'] - 1
@@ -391,8 +384,8 @@ if __name__ == "__main__":
     # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
     # feature engineering performed in line with this paper
 
-    rul_rf_train = train_clipped.copy()
-    rul_rf_test = test_clipped.copy()
+    rul_rf_train = train_org.copy()
+    rul_rf_test = test_org.copy()
 
     # apply z-score normalisation
     rul_rf_train_std, rul_rf_test_std = z_score_scaler(rul_rf_train, rul_rf_test, remaining_sensors)
@@ -431,19 +424,12 @@ if __name__ == "__main__":
     save_data_file(rul_rf_train_trended, "rul_rf_train_trended")
     save_data_file(rul_rf_test_trended, "rul_rf_test_trended")
 
-    #########################################################
-    #   Data Preparation for RUL-RF by trending - regression
-    #########################################################
+    #############################################################
+    #   Data Preparation for RUL-RF by trending - classification
+    #############################################################
 
-    def classify_breakdown(df, window_size):
-        for engine in df['unit num'].unique():
-            df_unit = df[df['unit num'] == engine]
-            max_window = df_unit['window num'].unique().max()
-            # check if breakdown is within the sliced data
-            if df_unit[df_unit['window num'] == max_window]['breakdown'].mean() != 1:
-                max_window += 1
-            for i, window in enumerate(df_unit['window num'].unique()):
-                df.loc[(df['unit num'] == engine) & (df['window num'] == window), 'breakdown'] = [max_window - i] * window_size
+    def add_category(df, bin_size=10):
+        df['category'] = [math.floor(x / bin_size) for x in df['RUL']]
         return df
 
 
@@ -451,19 +437,15 @@ if __name__ == "__main__":
     rul_rf_train_win_10 = slicing_generator(rul_rf_train_std_poly, remaining_sensors, 10, 10)
     rul_rf_test_win_10 = slicing_generator(rul_rf_test_std_poly, remaining_sensors, 10, 10)
 
-    rul_rf_train_win_classified = classify_breakdown(rul_rf_train_win_10, 10)
-    rul_rf_test_win_classified = classify_breakdown(rul_rf_test_win_10, 10)
-
-    save_data_file(rul_rf_train_win_10, "rul_rf_train_win_10")
-    #save_data_file(rul_rf_test_win_10, "rul_rf_test_win_10")
-
     # extract trend from extracted features
-    rul_rf_train_trended_classified = trend_extractor(rul_rf_train_win_classified, remaining_sensors)
-    rul_rf_test_trended_classified = trend_extractor(rul_rf_test_win_classified, remaining_sensors)
+    rul_rf_train_trended_10 = trend_extractor(rul_rf_train_win_10, remaining_sensors, 10, 10)
+    rul_rf_test_trended_10 = trend_extractor(rul_rf_test_win_10, remaining_sensors, 10, 10)
+
+    rul_rf_train_trended_classified = add_category(rul_rf_train_trended_10)
+    rul_rf_test_trended_classified = add_category(rul_rf_test_trended_10)
 
     save_data_file(rul_rf_train_trended_classified, "rul_rf_train_trended_classified")
     save_data_file(rul_rf_test_trended_classified, "rul_rf_test_trended_classified")
-
 
     ##################################################
     #   Data Preparation for FL Training - regression
