@@ -78,7 +78,7 @@ def nasaScore(RUL_true, RUL_hat):
             score += np.math.exp(i / 13) - 1
         else:
             score += np.math.exp(- i / 10) - 1
-    return score/len(RUL_true)  # should the score be averaged?
+    return score / len(RUL_true)  # should the score be averaged?
 
 
 def evaluate(model, df_result, label='test'):
@@ -142,7 +142,7 @@ def plot_loss(fit_history):
     plt.show()
 
 
-def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file):
+def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file, nb_classes=16, type='regression'):
     model = Sequential()
     model.add(Dense(nodes_per_layer[0], input_dim=input_dim, activation=activation))
     model.add(Dropout(dropout))
@@ -150,7 +150,10 @@ def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file):
     model.add(Dropout(dropout))
     model.add(Dense(nodes_per_layer[2], activation=activation))
     model.add(Dropout(dropout))
-    model.add(Dense(1))
+    if type == 'classification':
+        model.add(Dense(nb_classes, activation='softmax'))
+    else:
+        model.add(Dense(1))
 
     model.compile(loss='mean_squared_error', optimizer='adam')
     model.save_weights(weights_file)
@@ -247,12 +250,12 @@ def map_test_result(df_temp, df_main, L=20):
     for engine in interim_result['unit num'].unique():
         # get first and last index position of each set of engine
         first_idx = interim_result['unit num'].eq(engine).idxmax()
-        last_idx = interim_result['unit num'].eq(engine+1).idxmax()-1
+        last_idx = interim_result['unit num'].eq(engine + 1).idxmax() - 1
         if last_idx == -1:
-            last_idx = len(interim_result)-1
+            last_idx = len(interim_result) - 1
 
         # populate RUL for middle cycles
-        while (last_idx - first_idx) >= L-1:
+        while (last_idx - first_idx) >= L - 1:
             mid_idx = first_idx + L - 1
             interim_result.iat[mid_idx, -1] = df_temp.iloc[count]['y_hat']
             anchor_up = df_temp.iloc[count]['y_hat']
@@ -260,15 +263,16 @@ def map_test_result(df_temp, df_main, L=20):
             count += 1
             first_idx += L
             for offset in range(1, L):
-                interim_result.iat[mid_idx-offset, -1] = anchor_up + 1
+                interim_result.iat[mid_idx - offset, -1] = anchor_up + 1
                 anchor_up += 1
 
         # populate RUL for remaining cycles
-        for offset in range(1, last_idx-mid_idx+1):
+        for offset in range(1, last_idx - mid_idx + 1):
             interim_result.iat[mid_idx + offset, -1] = anchor_down - 1
             anchor_down -= 1
 
     return interim_result
+
 
 ################################
 #   Global variables
@@ -283,7 +287,7 @@ train_untuned_NN = False
 
 # to perform hyperparameter search for NN?
 nn_untrended_hyperparameter_tune = False
-nn_n_Iterations = 50
+nn_n_Iterations = 500
 train_tuned_NN = False
 
 # to re-train untuned rsf
@@ -435,7 +439,6 @@ df_result['y_hat'] = rf.predict(test_clipped[remaining_sensors])
 result = evaluate("RF (tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['RF (tuned)'] = df_result['y_hat']
-
 
 ################################
 #   Random Forest (Part 2)
@@ -644,7 +647,7 @@ graph_data['NN (tuned)'] = df_result['y_hat']
 
 # training the model
 filename = 'trended_pretuned_NN_model.h5'
-train_trended_untuned_NN=True
+train_trended_untuned_NN = True
 if train_trended_untuned_NN:
     # construct neural network
     nn_trended_untuned = Sequential()
@@ -664,8 +667,8 @@ nn_trended_untuned = load_model(filename)
 trended_x_val['y_hat'] = nn_trended_untuned.predict(trended_x_val[new_sensor_features])
 trended_x_val['RUL'] = trended_y_val
 print("pre-tuned trended Neural Network")
-#result = evaluate("NN (pre-tuned trended)", trended_x_val, 'train')
-#list_results.append(result)
+# result = evaluate("NN (pre-tuned trended)", trended_x_val, 'train')
+# list_results.append(result)
 
 df_temp = test_trend.copy()
 df_temp['y_hat'] = nn_trended_untuned.predict(test_trend[new_sensor_features])
@@ -675,7 +678,7 @@ list_results.append(result)
 graph_data['NN (pre-tuned trended)'] = df_result['y_hat']
 
 # Hyperparameter tuning trended neural network
-nn_trended_hyperparameter_tune = False
+nn_trended_hyperparameter_tune = True
 if nn_trended_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
@@ -730,7 +733,8 @@ if nn_trended_hyperparameter_tune:
 
             # train and evaluate model
             nn_trended_untuned.compile(loss='mean_squared_error', optimizer='adam')
-            nn_trended_untuned.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
+            nn_trended_untuned.load_weights(
+                weights_file)  # reset optimizer and node weights before every training iteration
             history = nn_trended_untuned.fit(X_train_split[new_sensor_features], y_train_split,
                                              validation_data=(X_val_split[new_sensor_features], y_val_split),
                                              epochs=epochs, batch_size=batch_size, verbose=0)
@@ -742,7 +746,8 @@ if nn_trended_hyperparameter_tune:
              'activation': activation, 'batch_size': batch_size}
         results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
 
-    results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
+    results.to_csv("nn_hyp_trended_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv",
+                   index=False)
 
 alpha = 0.2
 epochs = 30
@@ -764,10 +769,10 @@ if train_trended_tuned_NN:
     input_dim = len(trended_x_train[new_sensor_features].columns)
     weights_file = 'mlp_trended_hyper_parameter_weights'
     nn_trended_tuned = create_model(input_dim,
-                                   nodes_per_layer=nodes,
-                                   dropout=dropout,
-                                   activation=activation,
-                                   weights_file=weights_file)
+                                    nodes_per_layer=nodes,
+                                    dropout=dropout,
+                                    activation=activation,
+                                    weights_file=weights_file)
 
     nn_trended_tuned.compile(loss='mean_squared_error', optimizer='adam')
     nn_trended_tuned.load_weights(weights_file)
@@ -779,8 +784,8 @@ nn_trended_tuned = load_model(filename)
 trended_x_val['y_hat'] = nn_trended_tuned.predict(trended_x_val[new_sensor_features])
 trended_x_val['RUL'] = trended_y_val
 print("tuned trended Neural Network")
-#result = evaluate("NN (tuned trended)", trended_x_val, 'train')
-#list_results.append(result)
+# result = evaluate("NN (tuned trended)", trended_x_val, 'train')
+# list_results.append(result)
 
 df_temp = test_trend.copy()
 df_temp['y_hat'] = nn_trended_tuned.predict(test_trend[new_sensor_features])
@@ -821,18 +826,139 @@ if train_class_untuned_NN:
 
 nn_trended_class_untuned = load_model(filename)
 # print(np.argmax(nn_trended_class_untuned.predict(trended_x_val[new_sensor_features]), axis=1))
-trended_x_val['y_hat'] = np.argmax(nn_trended_class_untuned.predict(trended_x_val[new_sensor_features]), axis=1)  # get back labels by taking most likely prediction
+trended_x_val['y_hat'] = np.argmax(nn_trended_class_untuned.predict(trended_x_val[new_sensor_features]),
+                                   axis=1)  # get back labels by taking most likely prediction
 print("pre-tuned classification Neural Network")
 
 df_temp = test_trend_class.copy()
 df_temp['y_hat'] = np.argmax(nn_trended_class_untuned.predict(test_trend_class[new_sensor_features]), axis=1)
-df_temp.to_excel("hello_world.xlsx")
 df_temp['y_hat'] = df_temp['y_hat'] * 10 + 5
 df_result = map_test_result(df_temp, test_clipped)
 result = evaluate("NN (trended classification)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (trended classification)'] = df_result['y_hat']
 
+# Hyperparameter tuning trended neural network
+nn_trended_class_hyperparameter_tune = True
+if nn_trended_class_hyperparameter_tune:
+    alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
+    epoch_list = list(np.arange(10, 50 + 1, 5))
+    nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
+
+    # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
+    dropouts = list(np.arange(0, 4 + 1, 0.5) / 10)
+
+    # earlier testing revealed relu performed significantly worse, so I removed it from the options
+    activation_functions = ['tanh', 'sigmoid', 'relu']
+    batch_size_list = [16, 32, 64, 128, 256, 512]
+
+    ITERATIONS = nn_n_Iterations
+    results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
+                                    'alpha', 'epochs',
+                                    'nodes', 'dropout',
+                                    'activation', 'batch_size'])
+
+    weights_file = 'mlp_trended_hyper_parameter_weights.h5'  # save model weights
+    specific_lags = [1, 2, 3, 4, 5, 10, 20]
+
+    for i in range(ITERATIONS):
+        print("Iteration ", str(i + 1))
+        cce = []
+
+        # init parameters
+        alpha = random.sample(alpha_list, 1)[0]
+        epochs = random.sample(epoch_list, 1)[0]
+        nodes_per_layer = random.sample(nodes_list, 1)[0]
+        dropout = random.sample(dropouts, 1)[0]
+        activation = random.sample(activation_functions, 1)[0]
+        batch_size = random.sample(batch_size_list, 1)[0]
+
+        # create dataset
+        nn_x_train, nn_y_train, _ = prep_data(x_train=trended_x,
+                                              y_train=trended_y,
+                                              x_test=test_trend,
+                                              remaining_sensors=new_sensor_features,
+                                              lags=specific_lags,
+                                              alpha=alpha)
+        nn_y_train = pd.DataFrame(nn_y_train)
+        # create model
+        input_dim = len(nn_x_train[new_sensor_features].columns)
+        nn_trended_class_untuned = create_model(input_dim, nodes_per_layer, dropout,
+                                                activation, weights_file, nb_classes, 'classification')
+        # create train-validation split
+        gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
+        for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train,
+                                                   groups=trended_x['unit num']):
+            X_train_split = nn_x_train.iloc[idx_train].copy()
+            y_train_split = nn_y_train.iloc[idx_train].copy()
+            X_val_split = nn_x_train.iloc[idx_val].copy()
+            y_val_split = nn_y_train.iloc[idx_val].copy()
+
+            # train and evaluate model
+            nn_trended_class_untuned.compile(loss='categorical_crossentropy', optimizer='adam')
+            nn_trended_class_untuned.load_weights(
+                weights_file)  # reset optimizer and node weights before every training iteration
+            history = nn_trended_class_untuned.fit(X_train_split[new_sensor_features], y_train_split,
+                                                   validation_data=(X_val_split[new_sensor_features], y_val_split),
+                                                   epochs=epochs, batch_size=batch_size, verbose=0)
+            cce.append(history.history['val_loss'][-1])
+
+        # append results
+        d = {'CCE': np.mean(cce), 'alpha': alpha,
+             'epochs': epochs, 'nodes': str(nodes_per_layer), 'dropout': dropout,
+             'activation': activation, 'batch_size': batch_size}
+        results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
+
+    results.to_csv("nn_hyp_class_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv",
+                   index=False)
+
+alpha = 0.09
+epochs = 35
+specific_lags = [1, 2, 3, 4, 5, 10, 20]
+nodes = [128, 256, 512]
+dropout = 0.15
+activation = 'relu'
+batch_size = 32
+
+nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=trended_x,
+                                              y_train=trended_y,
+                                              x_test=test_trend,
+                                              remaining_sensors=new_sensor_features,
+                                              lags=specific_lags,
+                                              alpha=alpha)
+
+filename = 'finalized_trended_tuned_class_NN_model.h5'
+train_trended_tuned_class_NN = True
+if train_trended_tuned_class_NN:
+    input_dim = len(trended_x_train[new_sensor_features].columns)
+    weights_file = 'mlp_trended_hyper_parameter_weights'
+    nn_trended_class_tuned = create_model(input_dim,
+                                          nodes_per_layer=nodes,
+                                          dropout=dropout,
+                                          activation=activation,
+                                          weights_file=weights_file,
+                                          nb_classes=nb_classes,
+                                          type='classification')
+
+    nn_trended_class_tuned.compile(loss='categorical_crossentropy', optimizer='adam')
+    nn_trended_class_tuned.load_weights(weights_file)
+    nn_trended_class_tuned.fit(trended_x_train[new_sensor_features], trended_y_train,
+                               epochs=epochs, batch_size=batch_size, verbose=0)
+    nn_trended_class_tuned.save(filename)  # save trained model
+
+nn_trended_class_tuned = load_model(filename)
+trended_x_val['y_hat'] = np.argmax(nn_trended_class_tuned.predict(trended_x_val[new_sensor_features]), axis=1)
+print("tuned trended class NN")
+# result = evaluate("NN (tuned trended)", trended_x_val, 'train')
+# list_results.append(result)
+
+df_temp = test_trend.copy()
+df_temp['y_hat'] = np.argmax(nn_trended_class_tuned.predict(test_trend[new_sensor_features]), axis=1)
+df_temp['y_hat'] = df_temp['y_hat'] * 10 + 5
+df_result = map_test_result(df_temp, test_clipped)
+result = evaluate("NN (tuned trended class)", df_result, 'test')
+list_results.append(result)
+graph_data['NN (tuned trended class)'] = df_result['y_hat']
 
 ################################
 #   Random Survival Forest
