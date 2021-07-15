@@ -278,8 +278,8 @@ rmst_upper_bound = 400
 train_untuned_NN = False
 
 # to perform hyperparameter search for NN?
-nn_hyperparameter_tune = False
-nn_n_Iterations = 500
+nn_untrended_hyperparameter_tune = False
+nn_n_Iterations = 50
 train_tuned_NN = False
 
 # to re-train untuned rsf
@@ -442,9 +442,10 @@ graph_data['RF (tuned)'] = df_result['y_hat']
 print(delimiter)
 print("Started Random Forest (Part 2)")
 
-rf_x = train_trend.copy()
-rf_y = rf_x.pop('RUL')
-rf_x_train, rf_x_val, rf_y_train, rf_y_val = train_test_split(rf_x, rf_y, test_size=0.25, random_state=6)
+trended_x = train_trend.copy()
+trended_y = trended_x.pop('RUL')
+trended_x_train, trended_x_val, trended_y_train, trended_y_val = train_test_split(trended_x, trended_y,
+                                                                                  test_size=0.25, random_state=6)
 
 new_sensor_features = []
 for n in remaining_sensors:
@@ -457,11 +458,11 @@ for n in remaining_sensors:
 
 # model fitting
 rf = RandomForestRegressor(n_estimators=20, criterion="mse", max_features="sqrt", random_state=42)
-rf.fit(rf_x_train[new_sensor_features], rf_y_train)
+rf.fit(trended_x_train[new_sensor_features], trended_y_train)
 
 # predict and evaluate, without any hyperparameter tuning
-rf_x_val['y_hat'] = rf.predict(rf_x_val[new_sensor_features])
-rf_x_val['RUL'] = rf_y_val
+trended_x_val['y_hat'] = rf.predict(trended_x_val[new_sensor_features])
+trended_x_val['RUL'] = trended_y_val
 print("pre-tuned trended RF")
 
 df_temp = test_trend.copy()
@@ -471,9 +472,9 @@ result = evaluate("RF (trended)", df_result, 'test')
 list_results.append(result)
 graph_data['RF (trended)'] = df_result['y_hat']
 
-################################
-#   Neural Network (Part 1)
-################################
+#######################################
+#   Neural Network (Part 1 - untrended)
+#######################################
 # https://towardsdatascience.com/lagged-mlp-for-predictive-maintenance-of-turbofan-engines-c79f02a15329
 
 print(delimiter)
@@ -495,21 +496,21 @@ nn_x_train_scaled, nn_y_train, nn_x_val_scaled, nn_y_val = train_val_group_split
 filename = 'finalized_pretuned_NN_model.h5'
 if train_untuned_NN:
     # construct neural network
-    ct_untuned = Sequential()
-    ct_untuned.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
-    ct_untuned.add(Dense(32, activation='relu'))
-    ct_untuned.add(Dense(64, activation='relu'))
-    ct_untuned.add(Dense(1))
-    ct_untuned.compile(loss='mean_squared_error', optimizer='adam')
+    nn_untuned = Sequential()
+    nn_untuned.add(Dense(16, input_dim=len(remaining_sensors), activation='relu'))
+    nn_untuned.add(Dense(32, activation='relu'))
+    nn_untuned.add(Dense(64, activation='relu'))
+    nn_untuned.add(Dense(1))
+    nn_untuned.compile(loss='mean_squared_error', optimizer='adam')
 
     epochs = 20
-    history = ct_untuned.fit(nn_x_train_scaled[remaining_sensors], nn_y_train,
+    history = nn_untuned.fit(nn_x_train_scaled[remaining_sensors], nn_y_train,
                              validation_data=(nn_x_val_scaled[remaining_sensors], nn_y_val),
                              epochs=epochs, verbose=0)
-    ct_untuned.save(filename)  # save trained model
+    nn_untuned.save(filename)  # save trained model
 
-ct_untuned = load_model(filename)
-nn_x_val_scaled['y_hat'] = ct_untuned.predict(nn_x_val_scaled[remaining_sensors])
+nn_untuned = load_model(filename)
+nn_x_val_scaled['y_hat'] = nn_untuned.predict(nn_x_val_scaled[remaining_sensors])
 nn_x_val_scaled['RUL'] = nn_y_val
 print("pre-tuned Neural Network")
 result = evaluate("NN (pre-tuned)", nn_x_val_scaled, 'train')
@@ -517,13 +518,13 @@ list_results.append(result)
 
 # nn_x_test_scaled = nn_x_test_scaled.drop(['cycle', 'RUL', 'start'], axis=1)
 df_result = test_clipped.copy()
-df_result['y_hat'] = ct_untuned.predict(nn_x_test_scaled[remaining_sensors])
+df_result['y_hat'] = nn_untuned.predict(nn_x_test_scaled[remaining_sensors])
 result = evaluate("NN (pre-tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (pre-tuned)'] = df_result['y_hat']
 
-# Hyperparameter tuning
-if nn_hyperparameter_tune:
+# Hyperparameter tuning untrended neural network
+if nn_untrended_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
     nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
@@ -565,7 +566,7 @@ if nn_hyperparameter_tune:
                                               alpha=alpha)
         # create model
         input_dim = len(nn_x_train[remaining_sensors].columns)
-        ct_untuned = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
+        nn_untuned = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
         # create train-validation split
         gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
         for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train, groups=train_clipped['unit num']):
@@ -575,9 +576,9 @@ if nn_hyperparameter_tune:
             y_val_split = nn_y_train.iloc[idx_val].copy()
 
             # train and evaluate model
-            ct_untuned.compile(loss='mean_squared_error', optimizer='adam')
-            ct_untuned.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
-            history = ct_untuned.fit(X_train_split[remaining_sensors], y_train_split,
+            nn_untuned.compile(loss='mean_squared_error', optimizer='adam')
+            nn_untuned.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
+            history = nn_untuned.fit(X_train_split[remaining_sensors], y_train_split,
                                      validation_data=(X_val_split[remaining_sensors], y_val_split),
                                      epochs=epochs, batch_size=batch_size, verbose=0)
             mse.append(history.history['val_loss'][-1])
@@ -632,6 +633,157 @@ df_result['y_hat'] = nn_lagged_tuned.predict(nn_x_test[remaining_sensors])
 result = evaluate("NN (tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (tuned)'] = df_result['y_hat']
+
+######################################
+#   Neural Network (Part 2 - trended)
+######################################
+
+# training the model
+filename = 'trended_pretuned_NN_model.h5'
+train_trended_untuned_NN=True
+if train_trended_untuned_NN:
+    # construct neural network
+    nn_trended_untuned = Sequential()
+    nn_trended_untuned.add(Dense(16, input_dim=len(new_sensor_features), activation='relu'))
+    nn_trended_untuned.add(Dense(32, activation='relu'))
+    nn_trended_untuned.add(Dense(64, activation='relu'))
+    nn_trended_untuned.add(Dense(1))
+    nn_trended_untuned.compile(loss='mean_squared_error', optimizer='adam')
+
+    epochs = 20
+    history = nn_trended_untuned.fit(trended_x_train[new_sensor_features], trended_y_train,
+                                     validation_data=(trended_x_val[new_sensor_features], trended_y_val),
+                                     epochs=epochs, verbose=0)
+    nn_trended_untuned.save(filename)  # save trained model
+
+nn_trended_untuned = load_model(filename)
+trended_x_val['y_hat'] = nn_trended_untuned.predict(trended_x_val[new_sensor_features])
+trended_x_val['RUL'] = trended_y_val
+print("pre-tuned trended Neural Network")
+#result = evaluate("NN (pre-tuned trended)", trended_x_val, 'train')
+#list_results.append(result)
+
+df_temp = test_trend.copy()
+df_temp['y_hat'] = nn_trended_untuned.predict(test_trend[new_sensor_features])
+df_result = map_test_result(df_temp, test_clipped)
+result = evaluate("NN (pre-tuned trended)", df_result, 'test')
+list_results.append(result)
+graph_data['NN (pre-tuned trended)'] = df_result['y_hat']
+
+# Hyperparameter tuning trended neural network
+nn_trended_hyperparameter_tune = False
+if nn_trended_hyperparameter_tune:
+    alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
+    epoch_list = list(np.arange(10, 50 + 1, 5))
+    nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
+
+    # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
+    dropouts = list(np.arange(0, 4 + 1, 0.5) / 10)
+
+    # earlier testing revealed relu performed significantly worse, so I removed it from the options
+    activation_functions = ['tanh', 'sigmoid', 'relu']
+    batch_size_list = [16, 32, 64, 128, 256, 512]
+
+    ITERATIONS = nn_n_Iterations
+    results = pd.DataFrame(columns=['MSE', 'std_MSE',  # bigger std means less robust
+                                    'alpha', 'epochs',
+                                    'nodes', 'dropout',
+                                    'activation', 'batch_size'])
+
+    weights_file = 'mlp_trended_hyper_parameter_weights.h5'  # save model weights
+    specific_lags = [1, 2, 3, 4, 5, 10, 20]
+
+    for i in range(ITERATIONS):
+        print("Iteration ", str(i + 1))
+        mse = []
+
+        # init parameters
+        alpha = random.sample(alpha_list, 1)[0]
+        epochs = random.sample(epoch_list, 1)[0]
+        nodes_per_layer = random.sample(nodes_list, 1)[0]
+        dropout = random.sample(dropouts, 1)[0]
+        activation = random.sample(activation_functions, 1)[0]
+        batch_size = random.sample(batch_size_list, 1)[0]
+
+        # create dataset
+        nn_x_train, nn_y_train, _ = prep_data(x_train=trended_x,
+                                              y_train=trended_y,
+                                              x_test=test_trend,
+                                              remaining_sensors=new_sensor_features,
+                                              lags=specific_lags,
+                                              alpha=alpha)
+        # create model
+        input_dim = len(nn_x_train[new_sensor_features].columns)
+        nn_trended_untuned = create_model(input_dim, nodes_per_layer, dropout, activation, weights_file)
+        # create train-validation split
+        gss_search = GroupShuffleSplit(n_splits=3, train_size=0.80, random_state=42)
+        for idx_train, idx_val in gss_search.split(nn_x_train, nn_y_train,
+                                                   groups=trended_x['unit num']):
+            X_train_split = nn_x_train.iloc[idx_train].copy()
+            y_train_split = nn_y_train.iloc[idx_train].copy()
+            X_val_split = nn_x_train.iloc[idx_val].copy()
+            y_val_split = nn_y_train.iloc[idx_val].copy()
+
+            # train and evaluate model
+            nn_trended_untuned.compile(loss='mean_squared_error', optimizer='adam')
+            nn_trended_untuned.load_weights(weights_file)  # reset optimizer and node weights before every training iteration
+            history = nn_trended_untuned.fit(X_train_split[new_sensor_features], y_train_split,
+                                             validation_data=(X_val_split[new_sensor_features], y_val_split),
+                                             epochs=epochs, batch_size=batch_size, verbose=0)
+            mse.append(history.history['val_loss'][-1])
+
+        # append results
+        d = {'MSE': np.mean(mse), 'std_MSE': np.std(mse), 'alpha': alpha,
+             'epochs': epochs, 'nodes': str(nodes_per_layer), 'dropout': dropout,
+             'activation': activation, 'batch_size': batch_size}
+        results = results.append(pd.DataFrame(d, index=[0]), ignore_index=True)
+
+    results.to_csv("nn_hyp_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv", index=False)
+
+alpha = 0.2
+epochs = 30
+specific_lags = [1, 2, 3, 4, 5, 10, 20]
+nodes = [64, 128, 256]
+dropout = 0.2
+activation = 'relu'
+batch_size = 16
+
+nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=trended_x,
+                                              y_train=trended_y,
+                                              x_test=test_trend,
+                                              remaining_sensors=new_sensor_features,
+                                              lags=specific_lags,
+                                              alpha=alpha)
+filename = 'finalized_trended_tuned_NN_model.h5'
+train_trended_tuned_NN = False
+if train_trended_tuned_NN:
+    input_dim = len(trended_x_train[new_sensor_features].columns)
+    weights_file = 'mlp_trended_hyper_parameter_weights'
+    nn_trended_tuned = create_model(input_dim,
+                                   nodes_per_layer=nodes,
+                                   dropout=dropout,
+                                   activation=activation,
+                                   weights_file=weights_file)
+
+    nn_trended_tuned.compile(loss='mean_squared_error', optimizer='adam')
+    nn_trended_tuned.load_weights(weights_file)
+    nn_trended_tuned.fit(trended_x_train[new_sensor_features], trended_y_train,
+                         epochs=epochs, batch_size=batch_size, verbose=0)
+    nn_trended_tuned.save(filename)  # save trained model
+
+nn_trended_tuned = load_model(filename)
+trended_x_val['y_hat'] = nn_trended_tuned.predict(trended_x_val[new_sensor_features])
+trended_x_val['RUL'] = trended_y_val
+print("tuned trended Neural Network")
+#result = evaluate("NN (tuned trended)", trended_x_val, 'train')
+#list_results.append(result)
+
+df_temp = test_trend.copy()
+df_temp['y_hat'] = nn_trended_tuned.predict(test_trend[new_sensor_features])
+df_result = map_test_result(df_temp, test_clipped)
+result = evaluate("NN (tuned trended)", df_result, 'test')
+list_results.append(result)
+graph_data['NN (tuned trended)'] = df_result['y_hat']
 
 ################################
 #   Random Survival Forest
@@ -794,19 +946,19 @@ if train_untuned_ct:
     batch_size = 256
 
     net = MLPVanillaCoxTime(in_features, num_nodes, batch_norm, dropout)
-    ct_untuned = CoxTime(net, tt.optim.Adam,
+    nn_untuned = CoxTime(net, tt.optim.Adam,
                          labtrans=labtrans)  # set labtrans to get back the correct time scale in output
 
-    lrfinder = ct_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
+    lrfinder = nn_untuned.lr_finder(ct_x_train[remaining_sensors].to_numpy().astype('float32'),
                                     ct_y_train_split_tuple, batch_size, tolerance=2)
     # _ = lrfinder.plot()
     # plt.show()
     #
     # print("The best learning rate is: ", str(lrfinder.get_best_lr()))
 
-    ct_untuned.optimizer.set_lr(lrfinder.get_best_lr())
+    nn_untuned.optimizer.set_lr(lrfinder.get_best_lr())
 
-    log = ct_untuned.fit(ct_x_train[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
+    log = nn_untuned.fit(ct_x_train[remaining_sensors].to_numpy().astype('float32'), ct_y_train_split_tuple,
                          batch_size,
                          epochs=512,
                          callbacks=[tt.callbacks.EarlyStopping()],
@@ -817,9 +969,9 @@ if train_untuned_ct:
 # _ = log.plot()
 # plt.show()
 
-print(ct_untuned.partial_log_likelihood(*val).mean())
-_ = ct_untuned.compute_baseline_hazards()
-surv = ct_untuned.predict_surv_df(ct_x_val[remaining_sensors].to_numpy().astype('float32'))
+print(nn_untuned.partial_log_likelihood(*val).mean())
+_ = nn_untuned.compute_baseline_hazards()
+surv = nn_untuned.predict_surv_df(ct_x_val[remaining_sensors].to_numpy().astype('float32'))
 
 # print(test_clipped.shape)
 # print(surv)
@@ -838,7 +990,7 @@ ct_x_val['y_hat'] = ct_rmst - ct_x_val['cycle']
 result = evaluate("ct (untuned)", ct_x_val, 'train')
 list_results.append(result)
 
-surv = ct_untuned.predict_surv_df(ct_test_scaled[remaining_sensors].to_numpy().astype('float32'))
+surv = nn_untuned.predict_surv_df(ct_test_scaled[remaining_sensors].to_numpy().astype('float32'))
 
 ct_rmst = []  # create a list to store the rmst of each survival curve
 for col in surv:

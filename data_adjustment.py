@@ -379,9 +379,9 @@ if __name__ == "__main__":
     save_data_file(train_clipped, "train_clipped")
     save_data_file(test_clipped, "test_clipped")
 
-    ##########################################
-    #   Data Preparation for RUL-RF
-    ##########################################
+    #############################################
+    #   Data Preparation for RUL-RF by trending
+    #############################################
 
     # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
     # feature engineering performed in line with this paper
@@ -415,6 +415,7 @@ if __name__ == "__main__":
     # extracting features from rolling window
     rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
     rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
+
     # save_data_file(rul_rf_train_win, "rul_rf_train_win")
 
     # extract trend from extracted features
