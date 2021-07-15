@@ -52,7 +52,7 @@ def trend_extractor(df, sensor_names, L=20, K=20):
         new_sensor_features.append(n)
 
     num_sens_feature = len(new_sensor_features)
-    headers = [*new_sensor_features, 'window num', 'unit num', 'RUL']
+    headers = [*new_sensor_features, *other_headers]
     list_trend = [[] for _ in range(len(headers))]
     for engine in df['unit num'].unique():
         df_unit = df[df['unit num'] == engine]
@@ -92,9 +92,9 @@ def count_windows(length, L=20, K=20):
 
 
 def slicing_generator(df, sensor_names, L=20, K=20):
-    other_headers = ['window num', 'unit num', 'RUL']
+    other_headers = ['window num', 'unit num', 'RUL', 'breakdown']
     headers = [*sensor_names, *other_headers]
-    list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL
+    list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL + breakdown
     for engine in df['unit num'].unique():
         df_unit = df[df['unit num'] == engine]
         #num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
@@ -105,18 +105,22 @@ def slicing_generator(df, sensor_names, L=20, K=20):
         list_win[len(sensor_names)+1] = [*list_win[len(sensor_names)+1], *unit_num]
         for idx, sensor in enumerate(sensor_names):
             internal_list = []
+            breakdown_list = []
             RUL_list = []
             for window in range(0, num_of_windows):
                 offset = K * window
                 window_slice = df_unit.iloc[offset:offset+L][sensor]
                 if len(window_slice) < L:  # discard if ending number of instance in last window is smaller than K
                     break
-                window_RUL = [df_unit.iloc[offset + L - 1]['RUL']] * K
+                window_RUL = [df_unit.iloc[offset + L - 1]['RUL']] * K  # get last RUL and repeat that K times
+                window_breakdown = [df_unit.iloc[offset:offset + L]['breakdown'].sum()] * K  # get sum of breakdown and repeat that k times
                 internal_list = [*internal_list, *window_slice]
+                breakdown_list = [*breakdown_list, *window_breakdown]
                 RUL_list = [*RUL_list, *window_RUL]
             list_win[idx] = [*list_win[idx], *internal_list]
             if idx == 0:
                 list_win[len(sensor_names) + 1 + 1] = [*list_win[len(sensor_names) + 1 + 1], *RUL_list]
+                list_win[len(sensor_names) + 1 + 1 + 1] = [*list_win[len(sensor_names) + 1 + 1 + 1], *breakdown_list]
 
     df_win = pd.DataFrame.from_records(map(list, zip(*list_win)), columns=headers)
     return df_win
@@ -225,6 +229,7 @@ def fl_data_splitter(df, filename, type):
         print(type + " dataset " + chr(65 + i) + " has " + str(num_of_engine.nunique()) + " engines")
         temp_df.drop(labels=["cluster"], axis=1, inplace=True)
         save_data_file(temp_df, filename[i], True)
+
 
 def hierarchical_clustering(dist_mat, method='complete'):
     if method == 'complete':
@@ -379,9 +384,9 @@ if __name__ == "__main__":
     save_data_file(train_clipped, "train_clipped")
     save_data_file(test_clipped, "test_clipped")
 
-    #############################################
-    #   Data Preparation for RUL-RF by trending
-    #############################################
+    #########################################################
+    #   Data Preparation for RUL-RF by trending - regression
+    #########################################################
 
     # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
     # feature engineering performed in line with this paper
@@ -412,11 +417,12 @@ if __name__ == "__main__":
     # plt.ylabel('normalised sensor reading')
     # plt.show()
 
-    # extracting features from rolling window
+    # extracting features from rolling window by assigning window numbers
     rul_rf_train_win = slicing_generator(rul_rf_train_std_poly, remaining_sensors)
     rul_rf_test_win = slicing_generator(rul_rf_test_std_poly, remaining_sensors)
 
-    # save_data_file(rul_rf_train_win, "rul_rf_train_win")
+    save_data_file(rul_rf_train_win, "rul_rf_train_win")
+    save_data_file(rul_rf_test_win, "rul_rf_test_win")
 
     # extract trend from extracted features
     rul_rf_train_trended = trend_extractor(rul_rf_train_win, remaining_sensors)
@@ -425,9 +431,43 @@ if __name__ == "__main__":
     save_data_file(rul_rf_train_trended, "rul_rf_train_trended")
     save_data_file(rul_rf_test_trended, "rul_rf_test_trended")
 
-    ##########################################
-    #   Data Preparation for FL Training
-    ##########################################
+    #########################################################
+    #   Data Preparation for RUL-RF by trending - regression
+    #########################################################
+
+    def classify_breakdown(df, window_size):
+        for engine in df['unit num'].unique():
+            df_unit = df[df['unit num'] == engine]
+            max_window = df_unit['window num'].unique().max()
+            # check if breakdown is within the sliced data
+            if df_unit[df_unit['window num'] == max_window]['breakdown'].mean() != 1:
+                max_window += 1
+            for i, window in enumerate(df_unit['window num'].unique()):
+                df.loc[(df['unit num'] == engine) & (df['window num'] == window), 'breakdown'] = [max_window - i] * window_size
+        return df
+
+
+    # extracting features from rolling window by assigning window numbers
+    rul_rf_train_win_10 = slicing_generator(rul_rf_train_std_poly, remaining_sensors, 10, 10)
+    rul_rf_test_win_10 = slicing_generator(rul_rf_test_std_poly, remaining_sensors, 10, 10)
+
+    rul_rf_train_win_classified = classify_breakdown(rul_rf_train_win_10, 10)
+    rul_rf_test_win_classified = classify_breakdown(rul_rf_test_win_10, 10)
+
+    save_data_file(rul_rf_train_win_10, "rul_rf_train_win_10")
+    #save_data_file(rul_rf_test_win_10, "rul_rf_test_win_10")
+
+    # extract trend from extracted features
+    rul_rf_train_trended_classified = trend_extractor(rul_rf_train_win_classified, remaining_sensors)
+    rul_rf_test_trended_classified = trend_extractor(rul_rf_test_win_classified, remaining_sensors)
+
+    save_data_file(rul_rf_train_trended_classified, "rul_rf_train_trended_classified")
+    save_data_file(rul_rf_test_trended_classified, "rul_rf_test_trended_classified")
+
+
+    ##################################################
+    #   Data Preparation for FL Training - regression
+    ##################################################
 
     # This section is to prepare data for use in FATE Federated Learning package
     # Data used in FL must have the following headers
