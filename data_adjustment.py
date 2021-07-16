@@ -196,7 +196,11 @@ def create_cluster(df, sel_sensor="sens11_trend"):
 
 
 # splits and save the data according to the cluster numbering
-def fl_data_splitter(df, filename, type):
+def fl_data_splitter(df, filename, type, function='regression'):
+    if function == 'classification':
+        df['RUL'] = df['category']
+        df.drop(labels='category', inplace=True, axis=1)
+
     # find number of parties
     number_of_parties = df['cluster'].nunique()
 
@@ -451,6 +455,51 @@ if __name__ == "__main__":
     save_data_file(rul_rf_train_trended_classified, "rul_rf_train_trended_classified")
     save_data_file(rul_rf_test_trended_classified, "rul_rf_test_trended_classified")
 
+    #######################################################
+    #   Data Preparation for FL Training - classification
+    #######################################################
+
+    # This section is to prepare data for use in FATE Federated Learning package
+    # Data used in FL must have the following headers
+    # id   y   x0   x1   x2   x3   ...   xN
+    # y must be the target label, in this case the categories
+
+    # Step 0: Decide on the number of parties
+    num_parties = 3  # number of parties in the FL
+
+    # Step 1: Reshape data
+    rul_FL_train_trended_class = rul_rf_train_trended_classified.copy()
+    rul_FL_test_trended_class = rul_rf_train_trended_classified.copy()
+
+    # create a df of 100 lists of readings from "sel_sensor"
+    df_cluster_train_class = create_cluster(rul_FL_train_trended_class)
+    df_cluster_test_class = create_cluster(rul_FL_test_trended_class)
+
+    # Step 2: Segment the data
+    # Reshape the data so each series is a column and call the dataframe.corr() function
+    rul_FL_train_trended_class_cluster = segment_data_FL(rul_FL_train_trended_class, df_cluster_train_class, num_parties)
+    rul_FL_test_trended_class_cluster = segment_data_FL(rul_FL_test_trended_class, df_cluster_test_class, num_parties)
+
+    # Step 3: Assign the largest test dataset to the largest train dataset and so on
+    rul_FL_test_trended_class_cluster = re_map_test(rul_FL_test_trended_class_cluster, rul_FL_train_trended_class_cluster)
+
+    # Save split csv for verification
+    save_data_file(rul_FL_train_trended_class_cluster, "rul_FL_train_trended_cluster")
+    save_data_file(rul_FL_test_trended_class_cluster, "rul_FL_test_trended_cluster")
+
+    # Step 4: Save the datafiles
+    # Generate file_names
+    train_file_names = []
+    test_file_names = []
+
+    file_name_generator(num_parties, train_file_names, "train_class")
+    file_name_generator(num_parties, test_file_names, "test_class")
+
+    # split and save files
+    fl_data_splitter(rul_FL_train_trended_class_cluster, train_file_names, "train", "classification")
+    fl_data_splitter(rul_FL_test_trended_class_cluster, test_file_names, "test", "classification")
+
+
     ##################################################
     #   Data Preparation for FL Training - regression
     ##################################################
@@ -470,12 +519,6 @@ if __name__ == "__main__":
     # Step 1: Reshape data
     rul_FL_train_trended = rul_rf_train_trended.copy()
     rul_FL_test_trended = rul_rf_test_trended.copy()
-
-    clip_FL = False  # note that clipping will affect the mapping of results back to original data!
-    if clip_FL:
-        clipped = 7  # limit at xth window to have aligned number of windows across engines
-        rul_FL_train_clipped = rul_rf_train_trended[rul_rf_train_trended['window num'] <= clipped].copy()
-        rul_FL_test_clipped = rul_rf_test_trended[rul_rf_test_trended['window num'] <= clipped].copy()
 
     # create a df of 100 lists of readings from "sel_sensor"
     df_cluster_train = create_cluster(rul_FL_train_trended)

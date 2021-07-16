@@ -89,7 +89,7 @@ def evaluate(model, df_result, label='test'):
     label (string): type of output (train or test)
 
     Returns:
-    list: returns [model, label, rmse, ci_sk, variance]
+    list: returns [model, label, rmse, score, ci_sk, variance]
     """
 
     y_true = df_result['RUL']
@@ -292,15 +292,15 @@ nn_n_Iterations = 500
 train_tuned_NN = False
 
 # to re-train untuned rsf
-train_untuned_rsf = True
+train_untuned_rsf = False
 
 # to perform hyperparameter search for rsf?
 rsf_hyperparameter_tune = False
 rsf_n_Iterations = 10  # Number of parameter settings sampled
-train_tuned_rsf = True
+train_tuned_rsf = False
 
 # to re-train untuned cox-time
-train_untuned_ct = True
+train_untuned_ct = False
 
 # If graph should be displayed at the end
 show_graph = True
@@ -441,9 +441,9 @@ result = evaluate("RF (tuned)", df_result, 'test')
 list_results.append(result)
 graph_data['RF (tuned)'] = df_result['y_hat']
 
-################################
-#   Random Forest (Part 2)
-################################
+#####################################
+#   Random Forest (Part 2 - trended)
+#####################################
 
 # https://ieeexplore.ieee.org/document/9281004/footnotes#footnotes
 
@@ -982,9 +982,6 @@ rsf_x = rsf_x.reset_index().groupby(by='unit num').last()
 # rsf_x = rsf_x.append(breakdown_0, ignore_index=True)  # mix of breakdown and non-breakdown
 rsf_x['RUL'] = rsf_x['RUL'].clip(upper=clip_level)
 rsf_x['RUL'] = rsf_x.RUL.astype('float')
-import xlwt
-
-rsf_x.to_excel("test.xlsx", index=False)
 
 rsf_y = rsf_x[['breakdown', 'cycle']]
 rsf_y['breakdown'].replace(0, False, inplace=True)  # rsf only takes true or false
@@ -1006,8 +1003,6 @@ rsf = pickle.load(open(rsf_filename, 'rb'))
 result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, rsf_x_val, 'train')
 list_results.append(result)
 rsf_x_val['y_hat'] = y_hat
-rsf_x_val.to_excel("rsf_x_val.xlsx", index=False)
-
 result, y_hat = evaluate_rsf("rsf (pre-tuned)", rsf, test_clipped, 'test')
 list_results.append(result)
 graph_data['rsf (pre-tuned)'] = y_hat
