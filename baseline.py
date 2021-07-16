@@ -152,10 +152,11 @@ def create_model(input_dim, nodes_per_layer, dropout, activation, weights_file, 
     model.add(Dropout(dropout))
     if type == 'classification':
         model.add(Dense(nb_classes, activation='softmax'))
+        model.compile(loss='categorical_crossentropy', optimizer='adam')
     else:
         model.add(Dense(1))
+        model.compile(loss='mean_squared_error', optimizer='adam')
 
-    model.compile(loss='mean_squared_error', optimizer='adam')
     model.save_weights(weights_file)
     return model
 
@@ -678,7 +679,7 @@ list_results.append(result)
 graph_data['NN (pre-tuned trended)'] = df_result['y_hat']
 
 # Hyperparameter tuning trended neural network
-nn_trended_hyperparameter_tune = True
+nn_trended_hyperparameter_tune = False
 if nn_trended_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
@@ -764,7 +765,7 @@ nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=trended_x,
                                               lags=specific_lags,
                                               alpha=alpha)
 filename = 'finalized_trended_tuned_NN_model.h5'
-train_trended_tuned_NN = False
+train_trended_tuned_NN = True
 if train_trended_tuned_NN:
     input_dim = len(trended_x_train[new_sensor_features].columns)
     weights_file = 'mlp_trended_hyper_parameter_weights'
@@ -838,8 +839,8 @@ result = evaluate("NN (trended classification)", df_result, 'test')
 list_results.append(result)
 graph_data['NN (trended classification)'] = df_result['y_hat']
 
-# Hyperparameter tuning trended neural network
-nn_trended_class_hyperparameter_tune = True
+# Hyperparameter tuning trended classification neural network
+nn_trended_class_hyperparameter_tune = False
 if nn_trended_class_hyperparameter_tune:
     alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
     epoch_list = list(np.arange(10, 50 + 1, 5))
@@ -956,9 +957,9 @@ df_temp = test_trend.copy()
 df_temp['y_hat'] = np.argmax(nn_trended_class_tuned.predict(test_trend[new_sensor_features]), axis=1)
 df_temp['y_hat'] = df_temp['y_hat'] * 10 + 5
 df_result = map_test_result(df_temp, test_clipped)
-result = evaluate("NN (tuned trended class)", df_result, 'test')
+result = evaluate("NN (tuned trended classification)", df_result, 'test')
 list_results.append(result)
-graph_data['NN (tuned trended class)'] = df_result['y_hat']
+graph_data['NN (tuned trended classification)'] = df_result['y_hat']
 
 ################################
 #   Random Survival Forest
