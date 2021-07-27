@@ -10,6 +10,7 @@ import pandas as pd
 
 pd.options.mode.chained_assignment = None
 import numpy as np
+import seaborn as sns
 import random
 import matplotlib.pyplot as plt
 from lifelines import KaplanMeierFitter, CoxTimeVaryingFitter
@@ -320,17 +321,17 @@ km_train = train_org[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit nu
 
 plt.figure(figsize=(15, 7))
 kaplanMeier = KaplanMeierFitter()
-kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
+kaplanMeier.fit(km_train['cycle'], km_train['breakdown'], label="Survival curve")
 
-kaplanMeier.plot()
-plt.ylabel("Probability of survival", size=13)
-plt.xlabel("Cycles", size=13)
-plt.legend(loc=1, prop={'size': 20})
-plt.legend(['Survival probability curve'])
-plt.rcParams['xtick.labelsize']=20
-plt.rcParams['ytick.labelsize']=20
-plt.show()
-plt.close()
+# graph plot for report
+# fig, ax = plt.subplots()
+# kaplanMeier.plot(ax=ax)
+# ax.set_xlabel('Cycles', size=15)
+# ax.set_ylabel('Probability of survival', size=15)
+# ax.legend(loc='upper right', fontsize=15)
+# plt.xticks(fontsize=15)
+# plt.yticks(fontsize=15)
+# plt.show()
 
 # estimate restricted mean survival time from KM curve
 km_rmst = restricted_mean_survival_time(kaplanMeier, t=350)
@@ -363,19 +364,13 @@ print("Started Cox PH")
 
 # Train Cox model
 ctv = CoxTimeVaryingFitter()
-ctv.fit(train_clipped[train_cols], id_col="unit num", event_col='breakdown',
+ctv.fit(train_org[train_cols], id_col="unit num", event_col='breakdown',
         start_col='start', stop_col='cycle', show_progress=True, step_size=1)
 
 # Calculate log_partial_hazard for all data points
-train_cox = train_clipped.copy()  # need to make a copy so that we can add 'hazard' later
+train_cox = train_org.copy()  # need to make a copy so that we can add 'hazard' later
 predictions = ctv.predict_log_partial_hazard(train_cox)
 train_cox['hazard'] = predictions.to_frame()[0].values
-
-# df_hazard.plot('hazard', 'RUL', 'scatter', figsize=(15,5))
-# plt.xlabel('hazard')
-# plt.ylabel('RUL')
-# plt.show()
-# plt.close()
 
 # Fit an exponential curve to the relationship between log_partial_hazard and RUL
 popt, pcov = curve_fit(exponential_model, train_cox['hazard'], train_cox['RUL'])
@@ -392,6 +387,25 @@ df_result['y_hat'] = exponential_model(y_pred, *popt)
 result = evaluate('Cox', df_result, 'test')
 list_results.append(result)
 graph_data['Cox'] = df_result['y_hat']
+
+# Plotting for report
+fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+kaplanMeier.plot(ax=axes[0])
+axes[0].set_xlabel('Cycles', size=15)
+axes[0].set_ylabel('Probability of survival', size=15)
+axes[0].legend(loc='upper right', fontsize=15)
+plt.xticks(fontsize=15)
+plt.yticks(fontsize=15)
+########################################
+axes[1].scatter(train_cox['hazard'], train_cox['RUL'], label='Individual engine')
+axes[1].plot(range(-15, 20), exponential_model(range(-15, 20), *popt),
+         label='Fitted exponential curve', color='orange')
+axes[1].set_xlabel('Log-partial Hazard', size=15)
+axes[1].set_ylabel('RUL', size=15)
+axes[1].legend(loc='upper right', fontsize=15)
+plt.xticks(fontsize=15)
+plt.yticks(fontsize=15)
+plt.show()
 
 ################################
 #   Random Forest (Part 1)
