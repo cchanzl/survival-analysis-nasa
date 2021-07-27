@@ -316,20 +316,26 @@ print("Started Kaplan-Meier")
 train_cols = ['unit num', 'cycle'] + remaining_sensors + ['start', 'breakdown']
 predict_cols = ['cycle'] + remaining_sensors + ['start', 'breakdown']  # breakdown value will be 0
 
-km_train = train_clipped[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
+km_train = train_org[['unit num', 'cycle', 'breakdown', 'RUL']].groupby('unit num').last()
 
 plt.figure(figsize=(15, 7))
 kaplanMeier = KaplanMeierFitter()
 kaplanMeier.fit(km_train['cycle'], km_train['breakdown'])
 
-# kaplanMeier.plot()
-# plt.ylabel("Probability of survival")
-# plt.show()
-# plt.close()
+kaplanMeier.plot()
+plt.ylabel("Probability of survival", size=13)
+plt.xlabel("Cycles", size=13)
+plt.legend(loc=1, prop={'size': 20})
+plt.legend(['Survival probability curve'])
+plt.rcParams['xtick.labelsize']=20
+plt.rcParams['ytick.labelsize']=20
+plt.show()
+plt.close()
 
 # estimate restricted mean survival time from KM curve
-km_rmst = restricted_mean_survival_time(kaplanMeier, t=220)
+km_rmst = restricted_mean_survival_time(kaplanMeier, t=350)
 df_result = train_clipped.copy()
+print(km_rmst)
 df_result['km_rmst'] = km_rmst
 km_rmst_arr = [km_rmst for x in range(len(df_result))]
 df_result['y_hat'] = km_rmst_arr - df_result['cycle']
