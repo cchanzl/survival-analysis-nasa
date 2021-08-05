@@ -1,6 +1,8 @@
 import sys
 import math
+import random
 import pandas as pd
+
 pd.options.mode.chained_assignment = None  # default='warn'
 import numpy as np
 from scipy.cluster.hierarchy import single, complete, average, ward, dendrogram
@@ -9,6 +11,7 @@ from scipy.cluster.hierarchy import fcluster
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.preprocessing import MinMaxScaler
+
 
 ##########################
 #   Helper Functions
@@ -60,7 +63,7 @@ def trend_extractor(df, sensor_names, L=20, K=20):
         window_num = df_unit['window num'].unique().tolist()
         list_trend[num_sens_feature] = [*list_trend[num_sens_feature], *window_num]
         unit_num = [engine] * len(window_num)
-        list_trend[num_sens_feature+1] = [*list_trend[num_sens_feature+1], *unit_num]
+        list_trend[num_sens_feature + 1] = [*list_trend[num_sens_feature + 1], *unit_num]
         for idx, sensor in enumerate(sensor_names):
             mean_list = []
             trend_list = []
@@ -68,15 +71,15 @@ def trend_extractor(df, sensor_names, L=20, K=20):
             for window in range(0, len(df_unit['window num'].unique())):
                 offset = K * window
 
-                mean = df_unit.iloc[offset:offset+L][sensor].mean()
-                trend = np.polyfit(range(1, K+1), df_unit.iloc[offset:offset+L][sensor], 1)
+                mean = df_unit.iloc[offset:offset + L][sensor].mean()
+                trend = np.polyfit(range(1, K + 1), df_unit.iloc[offset:offset + L][sensor], 1)
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']]
 
                 trend_list = [*trend_list, trend[0]]
                 mean_list = [*mean_list, mean]
                 RUL_list = [*RUL_list, *window_RUL]
             list_trend[idx] = [*list_trend[idx], *mean_list]
-            list_trend[int(idx + num_sens_feature/2)] = [*list_trend[int(idx + num_sens_feature/2)], *trend_list]
+            list_trend[int(idx + num_sens_feature / 2)] = [*list_trend[int(idx + num_sens_feature / 2)], *trend_list]
             if idx == 0:
                 list_trend[num_sens_feature + 1 + 1] = [*list_trend[num_sens_feature + 1 + 1], *RUL_list]
 
@@ -98,18 +101,18 @@ def slicing_generator(df, sensor_names, L=20, K=20):
     list_win = [[] for _ in range(len(headers))]  # sensor + window number + unit num + RUL + breakdown
     for engine in df['unit num'].unique():
         df_unit = df[df['unit num'] == engine]
-        #num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
+        # num_of_windows = np.math.floor((len(df_unit) - L + 1) / K)  # no of win is const across sensors of same engine
         num_of_windows = count_windows(len(df_unit), L, K)
-        window_num = list(itertools.chain.from_iterable(itertools.repeat(x+1, K) for x in range(0, num_of_windows)))
+        window_num = list(itertools.chain.from_iterable(itertools.repeat(x + 1, K) for x in range(0, num_of_windows)))
         list_win[len(sensor_names)] = [*list_win[len(sensor_names)], *window_num]
         unit_num = [engine] * num_of_windows * K
-        list_win[len(sensor_names)+1] = [*list_win[len(sensor_names)+1], *unit_num]
+        list_win[len(sensor_names) + 1] = [*list_win[len(sensor_names) + 1], *unit_num]
         for idx, sensor in enumerate(sensor_names):
             internal_list = []
             RUL_list = []
             for window in range(0, num_of_windows):
                 offset = K * window
-                window_slice = df_unit.iloc[offset:offset+L][sensor]
+                window_slice = df_unit.iloc[offset:offset + L][sensor]
                 if len(window_slice) < L:  # discard if ending number of instance in last window is smaller than K
                     break
                 window_RUL = [df_unit.iloc[offset + L - 1]['RUL']] * K  # get last RUL and repeat that K times
@@ -144,8 +147,10 @@ def z_score_scaler(df_train, df_test, sensor_names):
         df_train_unit = df_train[df_train['unit num'] == i]
         df_test_unit = df_test[df_test['unit num'] == i]
         for column in sensor_names:
-            df_std_train.loc[df_std_train['unit num'] == i, column] = (df_train_unit[column] - df_train_unit[column].mean()) / df_train_unit[column].std()
-            df_std_test.loc[df_std_test['unit num'] == i, column] = (df_test_unit[column] - df_test_unit[column].mean()) / df_test_unit[column].std()
+            df_std_train.loc[df_std_train['unit num'] == i, column] = (df_train_unit[column] - df_train_unit[
+                column].mean()) / df_train_unit[column].std()
+            df_std_test.loc[df_std_test['unit num'] == i, column] = (df_test_unit[column] - df_test_unit[
+                column].mean()) / df_test_unit[column].std()
 
     return df_std_train, df_std_test
 
@@ -195,6 +200,16 @@ def create_cluster(df, sel_sensor="sens11_trend"):
     return df_cluster
 
 
+# assign cluster equally to the df
+def assign_balanced_split(df, assignment, num_parties):
+    assigned_df = df.copy()
+    default = -1
+    assigned_df['cluster'] = default
+    for i, unit_num in enumerate(assignment):
+        assigned_df.loc[assigned_df['unit num'] == unit_num, 'cluster'] = (i % num_parties) + 1
+    return assigned_df
+
+
 # splits and save the data according to the cluster numbering
 def fl_data_splitter(df, filename, type, function='regression'):
     if function == 'classification':
@@ -208,6 +223,7 @@ def fl_data_splitter(df, filename, type, function='regression'):
     multiplier = 100000
     if type == "train":
         multiplier = 100
+
     df['unit num'] = df['unit num'] * multiplier
     df['unit num'] = df['unit num'] + df['window num']
 
@@ -273,7 +289,7 @@ def segment_data_FL(df_data, df_cluster, no_of_parties):
     linkage_matrix = hierarchical_clustering(distance_matrix)
     cluster_labels_num = fcluster(linkage_matrix, no_of_parties, criterion='maxclust')
 
-    df_data["cluster"] = [cluster_labels_num[i-1] for i in df_data['unit num']]
+    df_data["cluster"] = [cluster_labels_num[i - 1] for i in df_data['unit num']]
     return df_data
 
 
@@ -293,6 +309,7 @@ def re_map_test(df_test, df_train):
     temp_test.drop('cluster', inplace=True, axis=1)
     temp_test.rename(columns={"new_cluster": "cluster"}, inplace=True)
     return temp_test
+
 
 ################################
 #   Data Settings
@@ -357,10 +374,12 @@ if __name__ == "__main__":
 
     # add event indicator 'breakdown' column, which represents either breakdown or censored event
     train_org['breakdown'] = 0
-    idx_last_record = train_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    idx_last_record = train_org.reset_index().groupby(by='unit num')[
+        'index'].last()  # engines breakdown at the last cycle
     train_org.at[idx_last_record, 'breakdown'] = 1
     test_org['breakdown'] = 0
-    idx_last_record = test_org.reset_index().groupby(by='unit num')['index'].last()  # engines breakdown at the last cycle
+    idx_last_record = test_org.reset_index().groupby(by='unit num')[
+        'index'].last()  # engines breakdown at the last cycle
     test_org.at[idx_last_record, 'breakdown'] = 1
 
     # Add start cycle column (only required for Cox model)
@@ -403,7 +422,7 @@ if __name__ == "__main__":
     rul_rf_train_std_poly = polynomial_fitting(rul_rf_train_std, remaining_sensors)
     rul_rf_test_std_poly = polynomial_fitting(rul_rf_test_std, remaining_sensors)
 
-    save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
+    # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
     # save_data_file(rul_rf_train_std_poly, "rul_rf_train_std_poly")
 
     # plot line graph
@@ -436,24 +455,27 @@ if __name__ == "__main__":
     #   Data Preparation for RUL-RF by trending - classification
     #############################################################
 
-    def add_category(df, bin_size=10):
-        df['category'] = [math.floor(x / bin_size) for x in df['RUL']]
-        return df
+    # this is no longer used as federated classification is not performed
+    # since dc_federated neural network can now support regression task
 
-
-    # extracting features from rolling window by assigning window numbers
-    rul_rf_train_win_10 = slicing_generator(rul_rf_train_std_poly, remaining_sensors, 10, 10)
-    rul_rf_test_win_10 = slicing_generator(rul_rf_test_std_poly, remaining_sensors, 10, 10)
-
-    # extract trend from extracted features
-    rul_rf_train_trended_10 = trend_extractor(rul_rf_train_win_10, remaining_sensors, 10, 10)
-    rul_rf_test_trended_10 = trend_extractor(rul_rf_test_win_10, remaining_sensors, 10, 10)
-
-    rul_rf_train_trended_classified = add_category(rul_rf_train_trended_10)
-    rul_rf_test_trended_classified = add_category(rul_rf_test_trended_10)
-
-    save_data_file(rul_rf_train_trended_classified, "rul_rf_train_trended_classified")
-    save_data_file(rul_rf_test_trended_classified, "rul_rf_test_trended_classified")
+    # def add_category(df, bin_size=10):
+    #     df['category'] = [math.floor(x / bin_size) for x in df['RUL']]
+    #     return df
+    #
+    #
+    # # extracting features from rolling window by assigning window numbers
+    # rul_rf_train_win_10 = slicing_generator(rul_rf_train_std_poly, remaining_sensors, 10, 10)
+    # rul_rf_test_win_10 = slicing_generator(rul_rf_test_std_poly, remaining_sensors, 10, 10)
+    #
+    # # extract trend from extracted features
+    # rul_rf_train_trended_10 = trend_extractor(rul_rf_train_win_10, remaining_sensors, 10, 10)
+    # rul_rf_test_trended_10 = trend_extractor(rul_rf_test_win_10, remaining_sensors, 10, 10)
+    #
+    # rul_rf_train_trended_classified = add_category(rul_rf_train_trended_10)
+    # rul_rf_test_trended_classified = add_category(rul_rf_test_trended_10)
+    #
+    # save_data_file(rul_rf_train_trended_classified, "rul_rf_train_trended_classified")
+    # save_data_file(rul_rf_test_trended_classified, "rul_rf_test_trended_classified")
 
     #######################################################
     #   Data Preparation for FL Training - classification
@@ -465,40 +487,39 @@ if __name__ == "__main__":
     # y must be the target label, in this case the categories
 
     # Step 0: Decide on the number of parties
-    num_parties = 3  # number of parties in the FL
-
-    # Step 1: Reshape data
-    rul_FL_train_trended_class = rul_rf_train_trended_classified.copy()
-    rul_FL_test_trended_class = rul_rf_train_trended_classified.copy()
-
-    # create a df of 100 lists of readings from "sel_sensor"
-    df_cluster_train_class = create_cluster(rul_FL_train_trended_class)
-    df_cluster_test_class = create_cluster(rul_FL_test_trended_class)
-
-    # Step 2: Segment the data
-    # Reshape the data so each series is a column and call the dataframe.corr() function
-    rul_FL_train_trended_class_cluster = segment_data_FL(rul_FL_train_trended_class, df_cluster_train_class, num_parties)
-    rul_FL_test_trended_class_cluster = segment_data_FL(rul_FL_test_trended_class, df_cluster_test_class, num_parties)
-
-    # Step 3: Assign the largest test dataset to the largest train dataset and so on
-    rul_FL_test_trended_class_cluster = re_map_test(rul_FL_test_trended_class_cluster, rul_FL_train_trended_class_cluster)
-
-    # Save split csv for verification
-    save_data_file(rul_FL_train_trended_class_cluster, "rul_FL_train_trended_cluster")
-    save_data_file(rul_FL_test_trended_class_cluster, "rul_FL_test_trended_cluster")
-
-    # Step 4: Save the datafiles
-    # Generate file_names
-    train_file_names = []
-    test_file_names = []
-
-    file_name_generator(num_parties, train_file_names, "train_class")
-    file_name_generator(num_parties, test_file_names, "test_class")
-
-    # split and save files
-    fl_data_splitter(rul_FL_train_trended_class_cluster, train_file_names, "train", "classification")
-    fl_data_splitter(rul_FL_test_trended_class_cluster, test_file_names, "test", "classification")
-
+    # num_parties = 3  # number of parties in the FL
+    #
+    # # Step 1: Reshape data
+    # rul_FL_train_trended_class = rul_rf_train_trended_classified.copy()
+    # rul_FL_test_trended_class = rul_rf_train_trended_classified.copy()
+    #
+    # # create a df of 100 lists of readings from "sel_sensor"
+    # df_cluster_train_class = create_cluster(rul_FL_train_trended_class)
+    # df_cluster_test_class = create_cluster(rul_FL_test_trended_class)
+    #
+    # # Step 2: Segment the data
+    # # Reshape the data so each series is a column and call the dataframe.corr() function
+    # rul_FL_train_trended_class_cluster = segment_data_FL(rul_FL_train_trended_class, df_cluster_train_class, num_parties)
+    # rul_FL_test_trended_class_cluster = segment_data_FL(rul_FL_test_trended_class, df_cluster_test_class, num_parties)
+    #
+    # # Step 3: Assign the largest test dataset to the largest train dataset and so on
+    # rul_FL_test_trended_class_cluster = re_map_test(rul_FL_test_trended_class_cluster, rul_FL_train_trended_class_cluster)
+    #
+    # # Save split csv for verification
+    # save_data_file(rul_FL_train_trended_class_cluster, "rul_FL_train_trended_cluster")
+    # save_data_file(rul_FL_test_trended_class_cluster, "rul_FL_test_trended_cluster")
+    #
+    # # Step 4: Save the datafiles
+    # # Generate file_names
+    # train_file_names = []
+    # test_file_names = []
+    #
+    # file_name_generator(num_parties, train_file_names, "train_class")
+    # file_name_generator(num_parties, test_file_names, "test_class")
+    #
+    # # split and save files
+    # fl_data_splitter(rul_FL_train_trended_class_cluster, train_file_names, "train", "classification")
+    # fl_data_splitter(rul_FL_test_trended_class_cluster, test_file_names, "test", "classification")
 
     ##################################################
     #   Data Preparation for FL Training - regression
@@ -516,7 +537,7 @@ if __name__ == "__main__":
     # Step 0: Decide on the number of parties
     num_parties = 3  # number of parties in the FL
 
-    # Step 1: Reshape data
+    # Step 1: Copy and reshape data
     rul_FL_train_trended = rul_rf_train_trended.copy()
     rul_FL_test_trended = rul_rf_test_trended.copy()
 
@@ -548,4 +569,38 @@ if __name__ == "__main__":
     fl_data_splitter(rul_FL_train_trended_cluster, train_file_names, "train")
     fl_data_splitter(rul_FL_test_trended_cluster, test_file_names, "test")
 
+    ############################################################
+    #   Balanced Data Preparation for FL Training - regression
+    ############################################################
 
+    # Step 1: Copy data
+    balanced_train_trended = rul_rf_train_trended.copy()
+    balanced_test_trended = rul_rf_test_trended.copy()
+
+    # Step 2: Create a list of 3 sub-list with indices from 1 to 100 representing the split
+    split_list = list(range(1, 101))
+    random.Random(7).shuffle(split_list)
+    # [34, 26, 100, 85, 79, 82, 22, 94, 83, 2, 23, 1, 62, 74, 25, 50, 27, 45, 77, 80, 48, 3, 52, 39, 15, 49, 11, 33, 17,
+    #  95, 66, 70, 43, 60, 89, 99, 67, 92, 58, 30, 21, 88, 35, 61, 32, 14, 64, 4, 57, 87, 46, 63, 59, 24, 93, 41, 37, 68,
+    #  72, 81, 44, 53, 36, 40, 76, 19, 97, 38, 18, 6, 91, 96, 98, 78, 29, 16, 73, 90, 55, 71, 86, 31, 9, 54, 56, 12, 5,
+    #  28, 65, 8, 75, 47, 13, 69, 10, 7, 84, 51, 20, 42]
+    print(split_list)
+
+    balanced_train_trended = assign_balanced_split(balanced_train_trended, split_list, num_parties)
+    balanced_test_trended = assign_balanced_split(balanced_train_trended, split_list, num_parties)
+
+    # Save split csv for verification
+    save_data_file(balanced_train_trended, "balanced_train_trended_cluster")
+    save_data_file(balanced_test_trended, "balanced_test_trended_cluster")
+
+    # Step 4: Save the datafiles
+    # Generate file_names
+    train_file_names = []
+    test_file_names = []
+
+    file_name_generator(num_parties, train_file_names, "train_balanced")
+    file_name_generator(num_parties, test_file_names, "test_balanced")
+
+    # split and save files
+    fl_data_splitter(balanced_train_trended, train_file_names, "train")
+    fl_data_splitter(balanced_test_trended, test_file_names, "test")
