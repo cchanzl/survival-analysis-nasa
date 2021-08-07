@@ -587,7 +587,7 @@ if __name__ == "__main__":
     print(split_list)
 
     balanced_train_trended = assign_balanced_split(balanced_train_trended, split_list, num_parties)
-    balanced_test_trended = assign_balanced_split(balanced_train_trended, split_list, num_parties)
+    balanced_test_trended = assign_balanced_split(balanced_test_trended, split_list, num_parties)
 
     # Save split csv for verification
     save_data_file(balanced_train_trended, "balanced_train_trended_cluster")
