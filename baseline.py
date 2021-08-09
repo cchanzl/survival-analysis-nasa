@@ -289,7 +289,7 @@ train_untuned_NN = False
 
 # to perform hyperparameter search for NN?
 nn_untrended_hyperparameter_tune = False
-nn_n_Iterations = 500
+nn_n_Iterations = 1000
 train_tuned_NN = False
 
 # to re-train untuned rsf
@@ -670,7 +670,7 @@ df_master_test['NN (tuned)'] = df_result['y_hat']
 
 # training the model
 filename = 'trended_pretuned_NN_model.h5'
-train_trended_untuned_NN = True
+train_trended_untuned_NN = False
 if train_trended_untuned_NN:
     # construct neural network
     nn_trended_untuned = Sequential()
@@ -703,12 +703,12 @@ df_master_test['NN (pre-tuned trended)'] = df_result['y_hat']
 # Hyperparameter tuning trended neural network
 nn_trended_hyperparameter_tune = False
 if nn_trended_hyperparameter_tune:
-    alpha_list = list(np.arange(5, 20 + 1, 0.5) / 100)
-    epoch_list = list(np.arange(10, 50 + 1, 5))
-    nodes_list = [[8, 16, 32], [16, 32, 64], [32, 64, 128], [64, 128, 256], [128, 256, 512]]
+    alpha_list = list(np.arange(250, 350 + 1, 5) / 1000)
+    epoch_list = list(np.arange(30, 50 + 1, 1))
+    nodes_list = [[32, 64, 128], [64, 128, 256], [128, 256, 512]]
 
     # lowest dropout=0.1, because I know zero dropout will yield better training results but worse generalization (overfitting)
-    dropouts = list(np.arange(0, 4 + 1, 0.5) / 10)
+    dropouts = list(np.arange(0, 5 + 1, 0.2) / 10)
 
     # earlier testing revealed relu performed significantly worse, so I removed it from the options
     activation_functions = ['tanh', 'sigmoid', 'relu']
@@ -772,13 +772,14 @@ if nn_trended_hyperparameter_tune:
     results.to_csv("nn_hyp_trended_results_" + now.replace('/', '-').replace(' ', '_').replace(':', '') + ".csv",
                    index=False)
 
-alpha = 0.2
-epochs = 30
+alpha = 0.321  # 0.321
+epochs = 24  # 24
 specific_lags = [1, 2, 3, 4, 5, 10, 20]
-nodes = [64, 128, 256]
-dropout = 0.2
-activation = 'relu'
-batch_size = 16
+nodes = [128, 256, 512]  # 128 256 512
+dropout = 0.4  # 0.4
+activation = 'relu'  # relu
+batch_size = 16  # 16
+# best 20.80
 
 nn_x_train, nn_y_train, nn_x_test = prep_data(x_train=trended_x,
                                               y_train=trended_y,
