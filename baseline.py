@@ -819,7 +819,7 @@ list_results.append(result)
 df_master_test['NN (tuned trended)'] = df_result['y_hat']
 
 #############################################
-#   Neural Network (Part 2 - classification)
+#   Neural Network (Part 3 - classification)
 #############################################
 
 nb_classes = 16
