@@ -21,4 +21,7 @@ This repo is divided into four main segments:
 8. Random Survival Forest - (Not used in final report)
 9. Cox-Time Method - (Not used in final report)
 
+## data_adjustment.py
+`data_adjustment.py` contains multiple steps to perform feature engineering on the original FD001 data. These steps include:
 
+1. 
