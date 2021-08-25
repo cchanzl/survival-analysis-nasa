@@ -36,3 +36,8 @@ This repo is divided into four main segments:
 
 Once the original dataset has been through the feature engineering steps above, it will then be split int K data set for the purpose of federated learning.
 
+## References
+Kaplan-Meier and Cox PH - https://towardsdatascience.com/survival-analysis-for-predictive-maintenance-of-turbofan-engines-7e2e9b82dc0e
+Random Forest (Part 1) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
+Feature engineering steps - https://ieeexplore.ieee.org/document/9281004
+Mann-Kendall - https://www.statisticshowto.com/wp-content/uploads/2016/08/Mann-Kendall-Analysis-1.pdf
