@@ -295,7 +295,7 @@ def segment_data_FL(df_data, df_cluster, no_of_parties):
 
 def file_name_generator(number_of_parties, listname, listtype="train"):
     for i in range(0, number_of_parties):
-        filename = "party_" + chr(65 + i) + "_" + listtype
+        filename = "party_" + str(i+1) + "_" + listtype
         listname.append(filename)
 
 
