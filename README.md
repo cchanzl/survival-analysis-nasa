@@ -30,11 +30,13 @@ This repo is divided into four main segments:
 4. Select sensors - Only sensors with useful inforamtion to predict RUL remain in the data and are used for prediction
 5. Normalisation - Applying z-score normalisation to selected sensors
 6. Polynomial fitting - Apply smoothing to the sensor readings
-7. Window - Split each set of sensor readings per engine into windows of readings of a predefined length
+7. Window - Split each set of sensor readings per engine into windows of readings of a predefined length (See image below)
 8. Trending - Extract a set of trend from each window
 9. Mean - Extract a set of mean from each window
 
 Once the original dataset has been through the feature engineering steps above, it will then be split int K data set for the purpose of federated learning.
+
+![alt text](https://github.com/cchanzl/survival-analysis-nasa/blob/main/images/slicing.png)
 
 ## References
 * Kaplan-Meier and Cox PH - https://towardsdatascience.com/survival-analysis-for-predictive-maintenance-of-turbofan-engines-7e2e9b82dc0e
