@@ -1,6 +1,6 @@
 # survival-analysis-nasa
 In this repo, we aim to predict the remaining useful life (RUL) of turbofan engines from the NASA turbofan engine
-degradation simulation data set FD001.
+degradation simulation data set FD001, using centralised models.
 
 This repo is divided into four main segments:
 1. `baseline.py` - trains and test the selected centralised models
