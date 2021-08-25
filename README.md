@@ -40,6 +40,7 @@ Once the original dataset has been through the feature engineering steps above, 
 
 ## References
 * Kaplan-Meier and Cox PH - https://towardsdatascience.com/survival-analysis-for-predictive-maintenance-of-turbofan-engines-7e2e9b82dc0e
-* Random Forest (Part 1) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
+* Random Survival Forest - http://dx.doi.org/10.1214/08-AOAS169
+* Random Forest (Part 2) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
 * Feature engineering steps - https://ieeexplore.ieee.org/document/9281004
 * Mann-Kendall - https://www.statisticshowto.com/wp-content/uploads/2016/08/Mann-Kendall-Analysis-1.pdf
