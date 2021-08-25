@@ -39,6 +39,7 @@ Once the original dataset has been through the feature engineering steps above, 
 ![alt text](https://github.com/cchanzl/survival-analysis-nasa/blob/main/images/slicing.png)
 
 ## References
+* NASA Turbofan Data set - https://ti.arc.nasa.gov/project/prognostic-data-repository/
 * Kaplan-Meier and Cox PH - https://towardsdatascience.com/survival-analysis-for-predictive-maintenance-of-turbofan-engines-7e2e9b82dc0e
 * Random Survival Forest - http://dx.doi.org/10.1214/08-AOAS169
 * Random Forest (Part 2) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
