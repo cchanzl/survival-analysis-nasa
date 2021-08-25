@@ -24,4 +24,15 @@ This repo is divided into four main segments:
 ## data_adjustment.py
 `data_adjustment.py` contains multiple steps to perform feature engineering on the original FD001 data. These steps include:
 
-1. 
+1. Adding additional columns - such as RUL, maximum cycle at failure, failure indicator, start cycle
+2. Clipping - Floor RUL at a pre-defined level which represents the point when degrdation pattern starts to appear
+3. Right censoring - Simulate right censoring by removing engine readings with RUL exceeding 200
+4. Select sensors - Only sensors with useful inforamtion to predict RUL remain in the data and are used for prediction
+5. Normalisation - Applying z-score normalisation to selected sensors
+6. Polynomial fitting - Apply smoothing to the sensor readings
+7. Window - Split each set of sensor readings per engine into windows of readings of a predefined length
+8. Trending - Extract a set of trend from each window
+9. Mean - Extract a set of mean from each window
+
+Once the original dataset has been through the feature engineering steps above, it will then be split int K data set for the purpose of federated learning.
+
