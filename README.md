@@ -1,6 +1,6 @@
 # survival-analysis-nasa
 In this repo, we aim to predict the remaining useful life (RUL) of turbofan engines from the NASA turbofan engine
-degradation simulation data set FD001.
+degradation simulation data set FD001, using centralised models.
 
 This repo is divided into four main segments:
 1. `baseline.py` - trains and test the selected centralised models
@@ -30,14 +30,18 @@ This repo is divided into four main segments:
 4. Select sensors - Only sensors with useful inforamtion to predict RUL remain in the data and are used for prediction
 5. Normalisation - Applying z-score normalisation to selected sensors
 6. Polynomial fitting - Apply smoothing to the sensor readings
-7. Window - Split each set of sensor readings per engine into windows of readings of a predefined length
+7. Window - Split each set of sensor readings per engine into windows of readings of a predefined length (See image below)
 8. Trending - Extract a set of trend from each window
 9. Mean - Extract a set of mean from each window
 
 Once the original dataset has been through the feature engineering steps above, it will then be split int K data set for the purpose of federated learning.
 
+![alt text](https://github.com/cchanzl/survival-analysis-nasa/blob/main/images/slicing.png)
+
 ## References
+* NASA Turbofan Data set - https://ti.arc.nasa.gov/project/prognostic-data-repository/
 * Kaplan-Meier and Cox PH - https://towardsdatascience.com/survival-analysis-for-predictive-maintenance-of-turbofan-engines-7e2e9b82dc0e
-* Random Forest (Part 1) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
+* Random Survival Forest - http://dx.doi.org/10.1214/08-AOAS169
+* Random Forest (Part 2) - https://towardsdatascience.com/random-forest-for-predictive-maintenance-of-turbofan-engines-5260597e7e8f
 * Feature engineering steps - https://ieeexplore.ieee.org/document/9281004
 * Mann-Kendall - https://www.statisticshowto.com/wp-content/uploads/2016/08/Mann-Kendall-Analysis-1.pdf
